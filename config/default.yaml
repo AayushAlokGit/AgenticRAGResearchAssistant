@@ -1,0 +1,31 @@
+# Naive-baseline configuration.
+#
+# Every value here is a STARTING GUESS, not a tuned setting. They are knobs to be
+# moved and measured against the eval set (see DESIGN_DECISIONS.md DD-001). This file
+# is versioned so eval runs are reproducible and single changes can be A/B tested.
+
+llm:
+  # Provider-fallback order. Built single-tier first; expanded to a real router later
+  # (see DD entry when that happens). Claude is the intended primary for agent/judge
+  # roles (strongest tool-use + JSON reliability).
+  provider_order: [anthropic] # later: [anthropic, gemini, ollama]
+  models:
+    anthropic: claude-sonnet-4-6 # agent loop / judge; bump to opus for harder reasoning
+    gemini: gemini-2.5-flash
+    ollama: llama3.1
+  temperature: 0.0 # near-deterministic for reproducible evals
+  max_tokens: 1024
+
+embedding:
+  model: sentence-transformers/all-MiniLM-L6-v2 # local, CPU-friendly baseline
+
+retrieval:
+  chunk_size: 800 # characters; naive fixed-size chunking to start
+  chunk_overlap: 100
+  top_k: 5 # chunks returned per query
+
+corpus:
+  root: ./corpus # seed corpus until the user's own docs exist
+
+eval:
+  dataset: ./evals/datasets/seed.yaml

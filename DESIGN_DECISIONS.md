@@ -11,6 +11,31 @@ Format per entry:
 
 ---
 
+## DD-002 — Installable `src/` package; config / prompts / corpus / evals versioned
+
+- **Date:** 2026-06-11
+- **Decision:** Use a `src/` layout with an installable package (`agentic_rag`) via
+  `pyproject.toml` + editable install (`pip install -e .`) — no `sys.path` manipulation.
+  Dependencies live in `pyproject.toml` as the single source of truth (no
+  `requirements.txt`). Top-level directories map to project concerns: `config/`,
+  `prompts/`, `corpus/`, `evals/`, `src/agentic_rag/{llm,rag,agent,context,memory,harness}`,
+  `tests/`. The package subdirs mirror the five modules so the structure is self-documenting.
+- **Why:**
+  - Installable packages give imports that work regardless of the working directory —
+    avoids the `sys.path.insert(...)` hack the prior MCP server relied on.
+  - One dependency source (pyproject) can't drift the way pyproject + requirements.txt can.
+  - Directory taxonomy that mirrors the five modules keeps the repo legible as it grows.
+  - Versioning `config/`, `prompts/`, `corpus/` is what makes single changes A/B-testable
+    against the eval set (DD-001 + ProjectIdea.md note #2).
+  - `tests/` (code correctness) is kept separate from `evals/` (system quality) on purpose.
+- **Rejected:**
+  - *Flat layout + `sys.path` insertion:* couples imports to cwd, not installable.
+  - *`requirements.txt` as the dependency source:* duplicate source of truth alongside
+    `pyproject.toml`.
+- **Status:** accepted.
+
+---
+
 ## DD-001 — Evals are a first-class, build-early concern
 
 - **Date:** 2026-06-11

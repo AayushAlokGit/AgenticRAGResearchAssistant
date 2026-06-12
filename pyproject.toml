@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-rag"
+version = "0.0.1"
+description = "A from-scratch, learning-focused agentic RAG research assistant"
+requires-python = ">=3.10"
+
+# Dependencies live HERE (single source of truth) — no separate requirements.txt.
+# Empty by design: we add a dependency only when a module actually needs it, so the
+# dependency list stays an honest record of what the project really uses.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
