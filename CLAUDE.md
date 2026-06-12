@@ -58,8 +58,8 @@ Five modules (see `ProjectIdea.md` for detail), built in order:
 
 ## Conventions
 
-- **Design decisions** are tracked in `DESIGN_DECISIONS.md` — short ADR-style entries.
-  When a real architectural fork is resolved, add an entry there.
+- **Design decisions** are tracked in `DESIGN_DECISIONS.md` — one short line each, newest
+  first. When a real architectural fork is resolved, add a one-liner there. Keep it terse.
 - **LLM layer:** **Gemini-only for now** — `gemini-2.5-flash` for agent/judge — because
   it's the only provider key currently available (DD-003). Embeddings are kept **local**
   (`all-MiniLM-L6-v2`) to preserve Gemini quota during repeated re-indexing. The
