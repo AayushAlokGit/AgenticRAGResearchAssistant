@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Vector store / local data (regenerable from corpus)
+chromadb_data/
+*.sqlite3
+*.duckdb
+
+# Embedding model caches
+.cache/
+models/
+
+# Eval / run artifacts
+eval_runs/
+traces/
+logs/
+*.log
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/mcp.json
