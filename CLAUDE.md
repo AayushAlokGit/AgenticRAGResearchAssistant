@@ -60,10 +60,12 @@ Five modules (see `ProjectIdea.md` for detail), built in order:
 
 - **Design decisions** are tracked in `DESIGN_DECISIONS.md` — short ADR-style entries.
   When a real architectural fork is resolved, add an entry there.
-- **LLM layer:** a provider-fallback router is a learning goal (primary → secondary →
-  local Ollama). Build it *router-shaped but single-tier first*; expand once the naive
-  loop + evals exist, so the router can be proven not to degrade quality. Claude is the
-  intended primary tier for agent/judge roles (strongest tool-use + JSON reliability).
+- **LLM layer:** **Gemini-only for now** — `gemini-2.5-flash` for agent/judge — because
+  it's the only provider key currently available (DD-003). Embeddings are kept **local**
+  (`all-MiniLM-L6-v2`) to preserve Gemini quota during repeated re-indexing. The
+  provider-fallback router remains a learning goal: the layer is built *router-shaped but
+  single-tier* now (provider_order is a list), and expanded to more tiers once additional
+  keys exist and the naive loop + evals can prove the router doesn't degrade quality.
 - **Versioning:** keep prompts, configs, and corpus versioned so single changes can be
   A/B tested against the eval set.
 

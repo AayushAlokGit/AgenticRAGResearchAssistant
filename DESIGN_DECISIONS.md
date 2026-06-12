@@ -11,6 +11,30 @@ Format per entry:
 
 ---
 
+## DD-003 — Gemini-only for now; embeddings stay local
+
+- **Date:** 2026-06-11
+- **Decision:** Use Google Gemini (`gemini-2.5-flash`) as the sole LLM for the agent loop
+  and LLM-as-judge, because it is the only provider key currently available. **Embeddings
+  stay local** (`all-MiniLM-L6-v2`), not Gemini. The LLM layer is still built
+  router-shaped (`provider_order` is a list) so adding tiers later is config-only.
+- **Why:**
+  - Gemini is the only key on hand; Claude-as-primary (previously assumed) isn't usable yet.
+  - Local embeddings need no key/quota and work offline, so they fully satisfy the
+    "only a Gemini key" constraint while **preserving** scarce Gemini quota for agent
+    reasoning. Ingestion embeds every chunk and the corpus is re-indexed repeatedly while
+    tuning against evals — embeddings are where free-tier quota burns fastest.
+  - Keeping the layer router-shaped means the eventual provider-fallback router (still a
+    learning goal) is a config change, not a rewrite, once more keys exist.
+- **Rejected:**
+  - *Gemini embeddings too ("Gemini everywhere" literally):* spends limited quota on the
+    one workload that doesn't need a cloud model; one-line flip in config if desired later.
+  - *Claude/Anthropic as primary (prior intent):* no key available right now.
+- **Status:** accepted (revisit when additional provider keys exist).
+- **Supersedes:** the "Claude is the intended primary tier" note previously in CLAUDE.md.
+
+---
+
 ## DD-002 — Installable `src/` package; config / prompts / corpus / evals versioned
 
 - **Date:** 2026-06-11

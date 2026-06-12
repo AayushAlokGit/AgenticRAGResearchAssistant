@@ -5,19 +5,23 @@
 # is versioned so eval runs are reproducible and single changes can be A/B tested.
 
 llm:
-  # Provider-fallback order. Built single-tier first; expanded to a real router later
-  # (see DD entry when that happens). Claude is the intended primary for agent/judge
-  # roles (strongest tool-use + JSON reliability).
-  provider_order: [anthropic] # later: [anthropic, gemini, ollama]
+  # Gemini-only for now (the only provider key currently available) — see DD-003.
+  # Still kept router-shaped: provider_order is a list so adding tiers later is a
+  # one-line change, no code rewrite.
+  provider_order: [gemini] # later, when more keys exist: [anthropic, gemini, ollama]
   models:
-    anthropic: claude-sonnet-4-6 # agent loop / judge; bump to opus for harder reasoning
-    gemini: gemini-2.5-flash
-    ollama: llama3.1
+    gemini: gemini-2.5-flash # agent loop / judge
+    anthropic: claude-sonnet-4-6 # reference only; unused until an Anthropic key exists
+    ollama: llama3.1 # reference only; unused until Ollama is set up
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
 
 embedding:
+  # Local + free + offline; needs NO API key, so it preserves the limited Gemini quota
+  # for agent reasoning during repeated re-indexing (DD-003). To go full-Gemini instead,
+  # swap to the gemini line below (and confirm the exact model id against your access).
   model: sentence-transformers/all-MiniLM-L6-v2 # local, CPU-friendly baseline
+  # model: gemini-embedding-001  # Gemini embeddings (consumes API quota)
 
 retrieval:
   chunk_size: 800 # characters; naive fixed-size chunking to start
