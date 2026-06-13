@@ -57,4 +57,10 @@ questions (MiniLM, 800/100 char chunks):
 | **hybrid (current, DD-009)** | **0.724** | **0.793** | **0.897** | **0.903** |
 
 Hybrid (dense + BM25 via rank_bm25 + RRF) won the A/B and is now the default. Remaining
-@5 misses to tune against next (reranking): q05, q25, q29. Answer-quality + cost layers not built yet.
+@5 misses to tune against next (reranking): q05, q25, q29.
+
+**Known limitation (DD-010):** this metric is *document-level* — it checks whether the
+right filename appears in the top-k chunks, not whether the retrieved *chunk* contains
+the answer. The answer pipeline exposed cases (e.g. q01) where the source doc is
+"retrieved" but the fact-bearing chunk ranks below top-k, so recall@k overstates true
+answerability. The answer-quality eval (rung 2) is what closes that gap. Answer-quality + cost layers not built yet.

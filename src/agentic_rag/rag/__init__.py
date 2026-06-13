@@ -10,7 +10,8 @@ technique, each earning its place against the eval set.
 Status: ingestion implemented — `ingest.py` (pipeline), `chunking.py` (fixed-size char
 chunks), `embeddings.py` (local all-MiniLM-L6-v2), `vector_store.py` (ChromaDB),
 `tracker.py` (content-hash idempotency). Run with `python -m agentic_rag.rag.ingest`.
-Retrieval: `retriever.py` (dense / hybrid + RRF fusion) and `bm25.py` (hand-rolled
-sparse) — hybrid is the eval-gated default (DD-009). Reranking + query transformation
-still to come — see ProjectIdea.md (module 1).
+Retrieval: `retriever.py` (dense / hybrid + RRF fusion) and `bm25.py` (BM25 via
+rank_bm25) — hybrid is the eval-gated default (DD-009). Naive answer pipeline:
+`answer.py` (retrieve -> cited answer, abstains when context is insufficient, DD-010).
+Reranking + the agentic loop still to come — see ProjectIdea.md (modules 1-2).
 """
