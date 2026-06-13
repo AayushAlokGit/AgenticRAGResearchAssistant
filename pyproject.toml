@@ -9,9 +9,13 @@ description = "A from-scratch, learning-focused agentic RAG research assistant"
 requires-python = ">=3.10"
 
 # Dependencies live HERE (single source of truth) — no separate requirements.txt.
-# Empty by design: we add a dependency only when a module actually needs it, so the
-# dependency list stays an honest record of what the project really uses.
-dependencies = []
+# We add a dependency only when a module actually needs it, so this list stays an
+# honest record of what the project really uses.
+dependencies = [
+    "pyyaml>=6.0",                  # read the versioned YAML config + eval datasets
+    "sentence-transformers>=2.2",   # local embeddings (all-MiniLM-L6-v2); pulls torch
+    "chromadb>=0.5",                # persistent vector store for the naive baseline
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

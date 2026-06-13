@@ -31,5 +31,17 @@ retrieval:
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
 
+vector_store:
+  # Naive baseline store (DD-006): persistent ChromaDB, cosine HNSW. We pass our own
+  # local embeddings in rather than letting Chroma embed, so the embedder stays swappable.
+  provider: chromadb
+  path: ./chromadb_data # persistent dir (gitignored)
+  collection: corpus
+
+ingestion:
+  # Content-hash idempotency tracker (DD-006): sha256 of file bytes, NOT mtime/size —
+  # so a git checkout doesn't trigger needless re-embedding. Lives next to the store.
+  tracking_file: ./chromadb_data/processed_files.json
+
 eval:
   dataset: ./evals/datasets/seed.yaml
