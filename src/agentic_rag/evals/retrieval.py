@@ -4,21 +4,20 @@ Measures whether the naive retriever surfaces the documents each question needs,
 ``seed.yaml``'s ``expected_sources`` as ground truth. This is the baseline the whole
 change->measure loop grades against (EVALUATION_PRINCIPLES.md, P4 rung 1).
 
+Only questions that declare ``expected_sources`` are scored — recall is undefined for a
+question with no target document, so those are left to a later answer-layer eval.
+
 We report recall at SEVERAL cutoffs plus MRR, on purpose: recall@5 over an 11-doc
 corpus saturates at 1.0 (no headroom — can't show improvement, only regressions). The
 stricter cutoffs and the ranking-sensitive MRR are what actually discriminate.
 
-Per answerable question, over the source docs within the first *k* retrieved chunks:
+Per question, over the source docs within the first *k* retrieved chunks:
   match: any  -> hit if AT LEAST ONE expected_source is retrieved
   match: all  -> hit if EVERY expected_source is retrieved (multi-hop; partial = miss)
 
-  recall@k = (questions that hit at k) / (answerable questions)
+  recall@k = (questions that hit at k) / (scored questions)
   MRR      = mean of 1/rank, where rank is the position of the first chunk whose source
              is an expected_source (0 if none found). Rewards ranking the right doc high.
-
-Abstention questions (``should_abstain: true``, no expected_sources) are NOT retrieval
-tests — abstaining is a generator/agent decision scored later. Excluded from recall/MRR;
-we report their top-1 similarity instead.
 
 Run (needs an ingested store):
     python -m agentic_rag.evals.retrieval
@@ -45,7 +44,7 @@ class QuestionResult:
     q: EvalQuestion
     retrieved_sources: List[str]       # unique source docs over retrieval depth, best-first
     top_score: float                   # similarity of the #1 hit
-    recall_at: Dict[int, Optional[bool]] = field(default_factory=dict)  # k -> hit (None=abstention)
+    recall_at: Dict[int, bool] = field(default_factory=dict)            # k -> hit
     first_relevant_rank: Optional[int] = None   # 1-based rank of first expected-source chunk
     missing_at_depth: List[str] = field(default_factory=list)           # expected docs never found
 
@@ -98,11 +97,6 @@ def score_question(q: EvalQuestion, hits: List[Hit]) -> QuestionResult:
     unique_sources = unique_in_order(chunk_sources)
     top_score = hits[0].score if hits else 0.0
 
-    # Abstention questions aren't a retrieval test — mark recall N/A and stop.
-    if q.should_abstain:
-        recall_na = {k: None for k in K_VALUES}
-        return QuestionResult(q, unique_sources, top_score, recall_na)
-
     first_rank = find_first_relevant_rank(chunk_sources, q.expected_sources)
 
     recall_at = {}
@@ -126,7 +120,7 @@ def mean(numbers: List[float]) -> float:
 
 
 def aggregate(results: List[QuestionResult]) -> tuple[Dict[int, float], float]:
-    """Compute recall@k (for each k) and MRR over a list of answerable results."""
+    """Compute recall@k (for each k) and MRR over a list of scored results."""
     recalls = {}
     for k in K_VALUES:
         hit_count = 0
@@ -155,7 +149,12 @@ def run(save: bool = True) -> dict:
         raise SystemExit("Vector store is empty — run `python -m agentic_rag.rag.ingest` first.")
     embedder = LocalEmbedder(config["embedding"]["model"])
 
-    questions = load_eval_dataset()
+    # Recall needs a ground-truth doc to check against, so only score questions that
+    # declare expected_sources.
+    questions = []
+    for q in load_eval_dataset():
+        if q.expected_sources:
+            questions.append(q)
 
     results = []
     for q in questions:
@@ -172,20 +171,11 @@ def run(save: bool = True) -> dict:
 # ───────────────────────────── printing + saving ─────────────────────────────
 
 def report(results: List[QuestionResult], config: dict) -> dict:
-    # Split answerable questions from abstention ones (which don't count toward recall).
-    answerable = []
-    abstain = []
-    for r in results:
-        if r.q.should_abstain:
-            abstain.append(r)
-        else:
-            answerable.append(r)
-
     print(f"\n=== Retrieval Recall (depth {max(K_VALUES)}) ===")
     print(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
 
-    print(f"ANSWERABLE ({len(answerable)})   rank = position of first expected-source chunk")
-    for r in answerable:
+    print(f"QUESTIONS ({len(results)})   rank = position of first expected-source chunk")
+    for r in results:
         flag_parts = []
         for k in K_VALUES:
             mark = "Y" if r.recall_at[k] else "n"
@@ -198,37 +188,27 @@ def report(results: List[QuestionResult], config: dict) -> dict:
             line += f"  MISSING: {', '.join(r.missing_at_depth)}"
         print(line)
 
-    print(f"\nABSTENTION ({len(abstain)}) — excluded; top-1 score (lower = easier to refuse):")
-    for r in abstain:
-        nearest = r.retrieved_sources[0] if r.retrieved_sources else "-"
-        print(f"  {r.q.id:<4} top={r.top_score:.3f}  nearest: {nearest}")
-
     # Overall numbers.
-    recalls, mrr = aggregate(answerable)
-    print(f"\nSUMMARY  (n={len(answerable)} answerable)")
+    recalls, mrr = aggregate(results)
+    print(f"\nSUMMARY  (n={len(results)} scored)")
     recall_str = "  ".join(f"@{k}={recalls[k]:.3f}" for k in K_VALUES)
     print(f"  recall  {recall_str}   MRR={mrr:.3f}")
 
     # Same numbers sliced by question type, so you can see WHERE it's weak.
-    types = sorted({r.q.type for r in answerable})
+    types = sorted({r.q.type for r in results})
     for t in types:
         subset = []
-        for r in answerable:
+        for r in results:
             if r.q.type == t:
                 subset.append(r)
         sub_recalls, sub_mrr = aggregate(subset)
         sub_recall_str = "  ".join(f"@{k}={sub_recalls[k]:.3f}" for k in K_VALUES)
         print(f"    {t:<10} {sub_recall_str}   MRR={sub_mrr:.3f}   (n={len(subset)})")
 
-    if abstain:
-        abstain_scores = [r.top_score for r in abstain]
-        print(f"  abstention top-1: min={min(abstain_scores):.3f} mean={mean(abstain_scores):.3f} max={max(abstain_scores):.3f}")
-
     return {
         "recall": recalls,
         "mrr": mrr,
-        "answerable": len(answerable),
-        "abstention_top_scores": {r.q.id: round(r.top_score, 4) for r in abstain},
+        "scored": len(results),
     }
 
 
