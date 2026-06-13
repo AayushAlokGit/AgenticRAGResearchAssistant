@@ -1,10 +1,11 @@
 """Run logging: console output + a per-run timestamped file under logs/<category>/.
 
 Each top-level run (an ingestion, an eval) calls ``configure_run_logging(category)`` once
-at startup. It creates ``logs/<category>/<category>_<UTC-timestamp>.log`` and wires the
-root logger to write there (DEBUG, full detail) and to the console (INFO, clean — just the
-message, so output reads like the old print()s). Library modules just do
-``logging.getLogger(__name__)`` and log; they don't know or care where it goes.
+at startup. ``category`` may be nested (e.g. "evals/retrieval"); it creates
+``logs/<category>/<name>_<UTC-timestamp>.log`` (where ``<name>`` is the category's last
+segment) and wires the root logger to write there (DEBUG, full detail) and to the console
+(INFO, clean — just the message, so output reads like the old print()s). Library modules
+just do ``logging.getLogger(__name__)`` and log; they don't know or care where it goes.
 
 ``logs/`` is gitignored — these are run artifacts, like ``eval_runs/``.
 """
@@ -35,7 +36,9 @@ def configure_run_logging(category: str) -> Path:
     logs_dir = resolve_path("./logs") / category
     logs_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    log_path = logs_dir / f"{category}_{stamp}.log"
+    # category may be nested (e.g. "evals/retrieval"); use only its last segment for the
+    # filename so the '/' doesn't leak into the file name and break the path.
+    log_path = logs_dir / f"{Path(category).name}_{stamp}.log"
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)

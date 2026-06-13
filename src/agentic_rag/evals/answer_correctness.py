@@ -1,7 +1,11 @@
-"""Answer-quality eval — rung 2: LLM-as-judge + deterministic abstention check.
+"""Answer-correctness eval — rung 2: LLM-as-judge + deterministic abstention check.
 
 Where retrieval recall (rung 1) asks "did we find the right document?", this asks the
 end-to-end question: "did the system produce the RIGHT ANSWER, or correctly refuse?"
+
+It measures CORRECTNESS (answer vs the known-correct reference) + abstention — NOT
+faithfulness (answer grounded in the retrieved context). Those are orthogonal axes; see
+docs/evals/ANSWER_QUALITY.md. Faithfulness is a separate, later eval.
 
 Two signals per question:
 
@@ -24,8 +28,8 @@ Honest caveats:
     SEPARATE reference-free judge, added as the next layer.
 
 Run (needs an ingested store + GROQ_API_KEY):
-    python -m agentic_rag.evals.answer_quality
-    python -m agentic_rag.evals.answer_quality --limit 5    # quick subset
+    python -m agentic_rag.evals.answer_correctness
+    python -m agentic_rag.evals.answer_correctness --limit 5    # quick subset
 """
 from __future__ import annotations
 
@@ -161,7 +165,7 @@ def report(results: List[QAResult], config: dict) -> dict:
     abstained_correctly = [r for r in abstention if r.abstained]
 
     model = config["llm"]["models"]["groq"]
-    logger.info(f"\n=== Answer Quality (generator = judge = {model}) ===")
+    logger.info(f"\n=== Answer Correctness (generator = judge = {model}) ===")
     logger.info("note: same model generates and grades (self-eval bias); LLM output is non-deterministic\n")
 
     # List the failures explicitly — that's what you act on.
@@ -226,11 +230,11 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
 
     record = {
         "timestamp": stamp,
-        "metric": "answer_quality",
+        "metric": "answer_correctness",
         "summary": summary,
         "per_question": per_question,
     }
-    path = out_dir / f"answer_quality_{stamp}.json"
+    path = out_dir / f"answer_correctness_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     logger.info(f"\n[saved] {path}")
 
@@ -240,11 +244,11 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
-    parser = argparse.ArgumentParser(description="Score end-to-end answer quality over the seed eval set.")
+    parser = argparse.ArgumentParser(description="Score end-to-end answer correctness over the seed eval set.")
     parser.add_argument("--limit", type=int, default=None, help="Only score the first N questions (quick check).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
-    configure_run_logging("evals")
+    configure_run_logging("evals/answer_correctness")
     run(save=not args.no_save, limit=args.limit)
 
 

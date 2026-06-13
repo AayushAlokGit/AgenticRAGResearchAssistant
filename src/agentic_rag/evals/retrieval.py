@@ -276,7 +276,7 @@ def main() -> None:
                         help="Retriever to score (default: config retrieval.mode).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
-    configure_run_logging("evals")
+    configure_run_logging("evals/retrieval")
     run(save=not args.no_save, mode=args.mode)
 
 
