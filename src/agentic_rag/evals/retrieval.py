@@ -51,6 +51,7 @@ class QuestionResult:
     recall_at: Dict[int, bool] = field(default_factory=dict)            # k -> hit
     first_relevant_rank: Optional[int] = None   # 1-based rank of first expected-source chunk
     missing_at_depth: List[str] = field(default_factory=list)           # expected docs never found
+    retrieved_hits: List[Hit] = field(default_factory=list)            # full chunks (with text) for diagnosis
 
 
 # ───────────────────────────── scoring one question ─────────────────────────────
@@ -112,7 +113,7 @@ def score_question(q: EvalQuestion, hits: List[Hit]) -> QuestionResult:
         if source not in unique_sources:
             missing.append(source)
 
-    return QuestionResult(q, unique_sources, top_score, recall_at, first_rank, missing)
+    return QuestionResult(q, unique_sources, top_score, recall_at, first_rank, missing, hits)
 
 
 # ───────────────────────────── aggregating + running ─────────────────────────────
@@ -232,6 +233,16 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
         recall_at = {}
         for k in K_VALUES:
             recall_at[str(k)] = r.recall_at[k]
+        # Full retrieved chunks (with text) so a run can be diagnosed offline at the
+        # chunk level — e.g. the right doc retrieved but the fact-bearing chunk missed.
+        retrieved_chunks = []
+        for hit in r.retrieved_hits:
+            retrieved_chunks.append({
+                "source": hit.source,
+                "chunk_index": hit.chunk_index,
+                "score": round(hit.score, 4),
+                "text": hit.text,
+            })
         per_question.append({
             "id": r.q.id,
             "question": r.q.question,
@@ -242,7 +253,8 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
             "top_score": round(r.top_score, 4),
             "expected": r.q.expected_sources,
             "missing": r.missing_at_depth,
-            "retrieved": r.retrieved_sources,
+            "retrieved_sources": r.retrieved_sources,
+            "retrieved": retrieved_chunks,
         })
 
     recall_summary = {}
