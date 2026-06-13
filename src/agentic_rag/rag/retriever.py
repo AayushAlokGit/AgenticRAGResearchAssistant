@@ -58,8 +58,18 @@ def reciprocal_rank_fusion(dense_hits: List[Hit], sparse_hits: List[Hit], rrf_k:
 
     RRF uses only RANKS, not raw scores, so it sidesteps the fact that cosine similarities
     (~0.6) and BM25 scores (~5) live on totally different scales — no normalization needed.
-    ``rrf_k`` (default 60) damps the influence of any single high rank, so one retriever
-    can't dominate just by being very confident about one chunk.
+
+    ``rrf_k`` (default 60) sets how steep the reward for top ranks is. Small k -> being #1
+    in one list dominates (1/rank: rank1=1.0 vs rank2=0.5, a huge gap). Large k flattens
+    the curve (k=60: rank1=1/61≈0.0164 vs rank2≈0.0161, a gentle gap), so appearing near
+    the top of BOTH lists matters more than being #1 in just one. 60 is the canonical default.
+
+    Example (k=60), dense=[A,B,C], sparse=[B,D,A]:
+        B = 1/62 + 1/61 = 0.0325   (rank2 dense + rank1 sparse)  -> winner
+        A = 1/61 + 1/63 = 0.0323   (rank1 dense + rank3 sparse)
+        D = 1/62        = 0.0161   (sparse only)
+        C = 1/63        = 0.0159   (dense only)
+    B beats A despite A being #1 in dense, because B ranks high in BOTH — RRF rewards agreement.
     """
     fused_score = {}
     hit_by_key = {}

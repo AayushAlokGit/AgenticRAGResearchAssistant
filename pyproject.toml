@@ -16,6 +16,8 @@ dependencies = [
     "sentence-transformers>=2.2",   # local embeddings (all-MiniLM-L6-v2); pulls torch
     "chromadb>=0.5",                # persistent vector store for the naive baseline
     "rank-bm25>=0.2",               # BM25 sparse retrieval for hybrid search
+    "groq>=0.11",                   # LLM provider (agent/judge) — Groq-only for now (DD-004)
+    "python-dotenv>=1.0",           # load GROQ_API_KEY etc. from a gitignored .env
 ]
 
 [tool.setuptools.packages.find]
