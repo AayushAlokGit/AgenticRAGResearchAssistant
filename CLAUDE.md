@@ -27,7 +27,7 @@ Concretely, this changes how you should work here:
   idea, name what's universal vs what's the domain-specific "skin/dialect," and where
   it helps give a non-RAG example to prove it transfers — then map it back to this
   project as one worked instance. Teaching docs should be general-first with a "how to
-  apply this to a new system" angle (see `evals/EVALUATION_PRINCIPLES.md` as the model).
+  apply this to a new system" angle (see `docs/evals/EVALUATION_PRINCIPLES.md` as the model).
 - **Prefer hand-rolled over framework magic.** The user is deliberately building the
   agent loop, context assembly, and harness by hand *before* reaching for LangGraph or
   similar, to understand what those frameworks abstract. Do not introduce a heavy

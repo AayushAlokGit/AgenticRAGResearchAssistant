@@ -7,7 +7,7 @@ The job of this directory: make "did that change help?" an answerable question, 
 turn this system's **silent failures** (fluent wrong answers that look like fluent right
 answers) into loud ones.
 
-> New here? Read `EVALUATION_PRINCIPLES.md` first — it's the **portable mental model**
+> New here? Read `../docs/evals/EVALUATION_PRINCIPLES.md` first — it's the **portable mental model**
 > (decompose, one-dataset-many-meters, the three metric families, the scoring-cost
 > ladder) written to transfer to *any* compound AI system, with this project as the
 > worked example. This README is just how that model is staged for *this* build.
