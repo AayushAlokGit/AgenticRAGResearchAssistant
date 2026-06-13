@@ -32,8 +32,8 @@ from typing import Dict, List, Optional
 
 from agentic_rag.config import load_config, resolve_path
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
-from agentic_rag.rag.embeddings import LocalEmbedder
-from agentic_rag.rag.vector_store import ChromaVectorStore, Hit
+from agentic_rag.rag.retriever import build_retriever
+from agentic_rag.rag.vector_store import Hit
 
 # Recall cutoffs to report. Spans from the discriminating (1) to the saturating (5).
 K_VALUES = (1, 3, 5)
@@ -150,14 +150,11 @@ def aggregate(results: List[QuestionResult]) -> tuple[Dict[int, float], float]:
     return recalls, mrr
 
 
-def run(save: bool = True) -> dict:
+def run(save: bool = True, mode: Optional[str] = None) -> dict:
     config = load_config()
     depth = max(K_VALUES)
 
-    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]), config["vector_store"]["collection"])
-    if store.count() == 0:
-        raise SystemExit("Vector store is empty — run `python -m agentic_rag.rag.ingest` first.")
-    embedder = LocalEmbedder(config["embedding"]["model"])
+    retriever = build_retriever(config, mode=mode)
 
     # Recall needs a ground-truth doc to check against, so only score questions that
     # declare expected_sources.
@@ -168,20 +165,19 @@ def run(save: bool = True) -> dict:
 
     results = []
     for q in questions:
-        query_vector = embedder.embed_query(q.question)
-        hits = store.query(query_vector, depth)
+        hits = retriever.query(q.question, depth)
         results.append(score_question(q, hits))
 
-    summary = report(results, config)
+    summary = report(results, retriever.name, config)
     if save:
-        persist(summary, results, config)
+        persist(summary, results, retriever.name, config)
     return summary
 
 
 # ───────────────────────────── printing + saving ─────────────────────────────
 
-def report(results: List[QuestionResult], config: dict) -> dict:
-    print(f"\n=== Retrieval Recall (depth {max(K_VALUES)}) ===")
+def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
+    print(f"\n=== Retrieval Recall (mode={mode}, depth {max(K_VALUES)}) ===")
     print(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
 
     print(f"QUESTIONS ({len(results)})   rank = position of first expected-source chunk")
@@ -216,13 +212,14 @@ def report(results: List[QuestionResult], config: dict) -> dict:
         print(f"    {t:<10} {sub_recall_str}   MRR={sub_mrr:.3f}   (n={len(subset)})")
 
     return {
+        "mode": mode,
         "recall": recalls,
         "mrr": mrr,
         "scored": len(results),
     }
 
 
-def persist(summary: dict, results: List[QuestionResult], config: dict) -> None:
+def persist(summary: dict, results: List[QuestionResult], mode: str, config: dict) -> None:
     """Write a timestamped JSON to eval_runs/ (gitignored) so baselines are diffable."""
     out_dir = resolve_path("./eval_runs")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -235,6 +232,7 @@ def persist(summary: dict, results: List[QuestionResult], config: dict) -> None:
             recall_at[str(k)] = r.recall_at[k]
         per_question.append({
             "id": r.q.id,
+            "question": r.q.question,
             "type": r.q.type,
             "match": r.q.match,
             "recall_at": recall_at,
@@ -252,6 +250,7 @@ def persist(summary: dict, results: List[QuestionResult], config: dict) -> None:
     record = {
         "timestamp": stamp,
         "metric": "retrieval_recall",
+        "mode": mode,
         "k_values": list(K_VALUES),
         "config": {
             "embedding": config["embedding"]["model"],
@@ -262,15 +261,18 @@ def persist(summary: dict, results: List[QuestionResult], config: dict) -> None:
         "per_question": per_question,
     }
 
-    path = out_dir / f"retrieval_recall_{stamp}.json"
+    path = out_dir / f"retrieval_recall_{mode}_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     print(f"\n[saved] {path}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score retrieval recall + MRR over the seed eval set.")
+    parser.add_argument("--mode", choices=["dense", "hybrid"], default=None,
+                        help="Retriever to score (default: config retrieval.mode).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
-    run(save=not parser.parse_args().no_save)
+    args = parser.parse_args()
+    run(save=not args.no_save, mode=args.mode)
 
 
 if __name__ == "__main__":

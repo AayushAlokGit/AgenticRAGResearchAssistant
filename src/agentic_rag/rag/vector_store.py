@@ -89,6 +89,27 @@ class ChromaVectorStore:
     def count(self) -> int:
         return self.collection.count()
 
+    def all_chunks(self) -> List[dict]:
+        """Return every stored chunk as ``{source, chunk_index, text}``.
+
+        Used to build the sparse (BM25) index, which needs the full chunk corpus in
+        memory. Cheap at our scale (hundreds of chunks); would need batching at millions.
+        """
+        got = self.collection.get(include=["documents", "metadatas"])
+        ids = got.get("ids", [])
+        documents = got.get("documents", [])
+        metadatas = got.get("metadatas", [])
+
+        chunks = []
+        for i in range(len(ids)):
+            meta = metadatas[i] or {}
+            chunks.append({
+                "source": meta.get("source", ""),
+                "chunk_index": meta.get("chunk_index", -1),
+                "text": documents[i] if i < len(documents) else "",
+            })
+        return chunks
+
     def reset(self) -> None:
         """Drop and recreate the collection (full wipe)."""
         self.client.delete_collection(self.collection_name)

@@ -48,7 +48,14 @@ change -> measure -> keep-or-revert loop is the real skill this project is pract
 
 Status: **`datasets/seed.yaml` v2 (32 questions: 29 answerable + 3 abstention) over the
 frozen 11-doc corpus, and the retrieval scorer, both exist.** v2 hardened the set
-(q13–q32) so recall@5 no longer saturates. Naive baseline (MiniLM, 800/100 char chunks)
-over the 29 recall-eligible questions: **recall@1=0.621, @3=0.759, @5=0.862, MRR=0.843.**
-Genuine failures to tune against: q16 (doc never retrieved), q22/q26/q29 (multi_hop
-match:all, second doc missing). Answer-quality + cost layers not built yet.
+(q13–q32) so recall@5 no longer saturates. Baselines over the 29 recall-eligible
+questions (MiniLM, 800/100 char chunks):
+
+| mode | recall@1 | recall@3 | recall@5 | MRR |
+|------|----------|----------|----------|-----|
+| dense (v2 baseline) | 0.621 | 0.759 | 0.862 | 0.843 |
+| **hybrid (current, DD-009)** | **0.759** | **0.862** | 0.862 | **0.931** |
+
+Hybrid (dense + BM25 + RRF) won the A/B and is now the default. Remaining failures to
+tune against next (reranking): q05, q25 (slipped out of top-5 under hybrid), and
+multi-hop q26/q29. Answer-quality + cost layers not built yet.
