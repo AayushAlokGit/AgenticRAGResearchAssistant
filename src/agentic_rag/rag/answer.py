@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
+from string import Template
 from typing import List, Optional
 
 from agentic_rag.config import load_config, resolve_path
@@ -36,10 +37,21 @@ class AnswerResult:
     retrieved: List[Hit]   # the chunks fed to the model, best-first
 
 
-def load_answer_prompt(config: dict) -> str:
-    """Load the versioned system prompt that instructs grounding + citations + abstention."""
-    prompt_path = resolve_path(config["prompts"]["answer"])
+def load_prompt(config: dict, name: str) -> str:
+    """Load a versioned prompt by name (e.g. 'answer_system') from the prompts dir."""
+    prompt_path = resolve_path(config["prompts"]["dir"]) / f"{name}.md"
     return prompt_path.read_text(encoding="utf-8")
+
+
+def render_prompt(template_text: str, **variables) -> str:
+    """Fill $placeholders in a prompt template with the given values.
+
+    Uses string.Template: only ``$name`` is special, and ``safe_substitute`` leaves any
+    stray ``$`` or unknown token untouched instead of raising — robust against the
+    arbitrary document text we splice into $context. (We avoid str.format here because a
+    literal { or } in document/code content would break it.)
+    """
+    return Template(template_text).safe_substitute(variables)
 
 
 def assemble_context(hits: List[Hit]) -> str:
@@ -59,10 +71,16 @@ def answer_question(question: str, config: Optional[dict] = None) -> AnswerResul
     top_k = config["retrieval"]["top_k"]
     hits = retriever.query(question, top_k)
 
-    # 2. Assemble the labeled context and the two-message prompt.
-    system_prompt = load_answer_prompt(config)
+    # 2. Assemble the two-message prompt from versioned templates: static instructions as
+    #    the system message, and the dynamic context + question rendered into the user
+    #    template's $placeholders.
+    system_prompt = load_prompt(config, "answer_system")
     context = assemble_context(hits)
-    user_message = f"CONTEXT:\n{context}\n\nQUESTION: {question}"
+    user_message = render_prompt(
+        load_prompt(config, "answer_user"),
+        context=context,
+        question=question,
+    )
 
     # 3. Generate the answer.
     llm = build_llm(config)

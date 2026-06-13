@@ -49,8 +49,9 @@ ingestion:
   tracking_file: ./chromadb_data/processed_files.json
 
 prompts:
-  # Versioned prompt files (not inline strings) so a prompt change is A/B testable.
-  answer: ./prompts/answer_with_citations.md
+  # Versioned prompt files, loaded by name from this dir (e.g. answer_system.md,
+  # answer_user.md). Kept out of code so a prompt change is A/B testable.
+  dir: ./prompts
 
 eval:
   dataset: ./evals/datasets/seed.yaml
