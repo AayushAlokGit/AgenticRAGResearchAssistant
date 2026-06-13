@@ -1,6 +1,8 @@
-# Seed eval set — v1
+# Seed eval set — v2
 #
-# ~12 hand-written questions over the FROZEN 11-doc corpus snapshot in `corpus/`.
+# 32 hand-written questions (29 answerable + 3 abstention) over the FROZEN 11-doc corpus
+# snapshot in `corpus/`. v2 added q13–q32 to give the retrieval-recall metric headroom
+# (v1's recall@5 saturated at 1.0) and to cover docs v1 never targeted.
 # This file is the source of truth for "did that change help?" (DD-001). It is versioned
 # so a single retriever/prompt/config change can be A/B tested against a fixed baseline.
 #
@@ -34,7 +36,7 @@
 # DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB, REFINED_MCP_TOOLS_PLAN) — they serve as retrieval noise
 # for now and are fair game for future questions.
 
-version: 1
+version: 2
 corpus: ./corpus            # the frozen snapshot these questions are written against
 
 questions:
@@ -154,3 +156,224 @@ questions:
     should_abstain: true
     expected_answer: "Not enough information. The corpus describes Azure Cognitive Search as 'pay-per-use' but gives no specific dollar figure."
     notes: "The corpus discusses cost qualitatively; a specific number is unsupported and must be refused."
+
+  # ═══════════════════════════════════════════════════════════════════════════════════
+  # v2 additions (q13–q32) — harden the set: add headroom + spread coverage.
+  # Goal: stop recall@5 saturating at 1.0 by adding harder multi_hop/match:all cases and
+  # distractor-sensitive questions, and cover docs the v1 set never targeted
+  # (CHROMADB_DATA_VIEWING_GUIDE, DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB, REFINED_MCP_TOOLS_PLAN,
+  # 01-Architecture-with-azure-cognitive-search). Every expected_sources entry was
+  # confirmed by reading that doc.
+  # ═══════════════════════════════════════════════════════════════════════════════════
+
+  # ── Coverage: CHROMADB_DATA_VIEWING_GUIDE (previously uncovered) ─────────────────
+  - id: q13
+    type: factual
+    question: "What script exports the ChromaDB collection to a readable JSON file for inspection, and what is its default output filename?"
+    match: any
+    expected_sources:
+      - CHROMADB_DATA_VIEWING_GUIDE.md
+    should_abstain: false
+    expected_answer: "export_chromadb_data.py exports the documentation_collection to chromadb_export.json by default."
+    notes: "Targets the data-viewing guide, a doc no v1 question covered. Script name + default file live only here."
+
+  - id: q14
+    type: factual
+    question: "I opened ChromaDB's underlying SQLite file directly — which three tables hold the collections, document vectors, and document metadata?"
+    match: any
+    expected_sources:
+      - CHROMADB_DATA_VIEWING_GUIDE.md
+    should_abstain: false
+    expected_answer: "The collections table, the embeddings table (document content and vectors), and the metadata table, inside chroma.sqlite3."
+    notes: "Phrased differently from the doc (no 'chroma.sqlite3' keyword in the query) to stress semantic retrieval. Table names appear only in the data-viewing guide."
+
+  - id: q15
+    type: factual
+    question: "My ChromaDB export script is failing with a 'database locked' error. According to the data-viewing guide, what should I do to resolve it?"
+    match: any
+    expected_sources:
+      - CHROMADB_DATA_VIEWING_GUIDE.md
+    should_abstain: false
+    expected_answer: "Stop the MCP server (Ctrl+C), close DB Browser if it is open, ensure the virtual environment is activated, then retry the export script."
+    notes: "Troubleshooting fact unique to the data-viewing guide. Probes whether a how-to/error query reaches the right low-traffic doc."
+
+  # ── Coverage: DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB (previously uncovered) ──────────
+  - id: q16
+    type: factual
+    question: "What are the minimum RAM and free-storage requirements to run the ChromaDB document-upload system, and how is that RAM expected to be split?"
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB.md
+    should_abstain: false
+    expected_answer: "Minimum 8GB RAM (4GB for models + 4GB for processing) and 10GB+ free storage for models and ChromaDB."
+    notes: "Hardware spec lives only in the ChromaDB setup guide. The ChromaDB-arch doc lists similar hardware tiers, so partly distractor-sensitive, but the 4GB/4GB split is unique here."
+
+  - id: q17
+    type: factual
+    question: "When you run the ChromaDB upload pipeline and a previously indexed document has since been deleted from disk, what happens to it in the index?"
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB.md
+    should_abstain: false
+    expected_answer: "Deleted files are automatically detected and removed from ChromaDB on the next upload run (alongside new files being processed, modified files re-embedded, and unchanged files skipped)."
+    notes: "The deletion-handling behavior is stated explicitly only in the ChromaDB setup guide's change-detection list."
+
+  - id: q18
+    type: factual
+    question: "Before doing a real ChromaDB upload, which command-line flag lets me preview which documents would be processed without actually uploading them?"
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB.md
+      - PROJECT_README.md
+    should_abstain: false
+    expected_answer: "The --dry-run flag previews what will be processed without uploading."
+    notes: "The --dry-run flag is documented in both the ChromaDB setup guide and PROJECT_README's command reference, so match:any."
+
+  - id: q19
+    type: factual
+    question: "Do I have to manually initialize or create the ChromaDB collection before my first upload, or is it created for me?"
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB.md
+    should_abstain: false
+    expected_answer: "No manual step is needed — the ChromaDB collection is created automatically when you run your first upload script."
+    notes: "Setup guide states the collection auto-creates. The ChromaDB-arch doc's setup snippet shows an initialize_chromadb.py step, making it a tempting wrong match — so this is distractor-sensitive."
+
+  # ── Coverage: REFINED_MCP_TOOLS_PLAN (previously uncovered) ──────────────────────
+  - id: q20
+    type: factual
+    question: "In the refined use-case-agnostic tools plan, how many universal tools is the design consolidated down to, and which single tool replaces the previous six search tools?"
+    match: any
+    expected_sources:
+      - REFINED_MCP_TOOLS_PLAN.md
+    should_abstain: false
+    expected_answer: "Four universal tools, with search_documents replacing the six previous search tools."
+    notes: "The 8→4 consolidation and 'search_documents replaces 6 search tools' detail are unique to the refined tools plan. Note: this 4-tool count is the PLAN, distinct from the 5 tools the ChromaDB server actually ships."
+
+  - id: q21
+    type: factual
+    question: "What values are allowed for the search_type parameter of the refined search_documents tool, and which one is the default?"
+    match: any
+    expected_sources:
+      - REFINED_MCP_TOOLS_PLAN.md
+    should_abstain: false
+    expected_answer: "The search_type enum is text, vector, hybrid, and semantic; the default is hybrid."
+    notes: "The tool's JSON schema (enum + default) is spelled out only in the refined tools plan."
+
+  - id: q22
+    type: multi_hop
+    question: "The refined tools plan proposes a use-case-agnostic search_documents tool with a hybrid default. Which underlying search infrastructure and filter-expression syntax is that plan built on, and how does that compare to what the local ChromaDB architecture actually offers for search?"
+    match: all
+    expected_sources:
+      - REFINED_MCP_TOOLS_PLAN.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "The refined plan is built on Azure Cognitive Search using OData filter expressions and its text/vector/hybrid/semantic search modes. The local ChromaDB architecture instead offers only vector (semantic) search plus metadata filtering — no BM25/hybrid/semantic-ranking modes."
+    notes: "True multi-hop. The Azure/OData basis of the plan is in REFINED_MCP_TOOLS_PLAN; ChromaDB's actual 2 search types (vector + metadata) are in the ChromaDB arch doc. match:all so retrieving only one scores as partial."
+
+  # ── Coverage / distractor: 01-Architecture-with-azure-cognitive-search (legacy) ──
+  - id: q23
+    type: factual
+    question: "In the legacy Azure Cognitive Search architecture, which embedding model is used and how many dimensions does its vector field hold?"
+    match: any
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "Azure OpenAI text-embedding-ada-002, producing 1536-dimensional embeddings (content_vector)."
+    notes: "Distractor-sensitive mirror of q01: the ChromaDB docs (384-dim all-MiniLM-L6-v2) are the tempting wrong match. The ada-002/1536 pairing is specific to the legacy Azure arch doc."
+
+  - id: q24
+    type: factual
+    question: "How many fields does the generic Azure Cognitive Search index schema define, and which field stores the embedding vector?"
+    match: any
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "A generic 13-field schema; the content_vector field stores the 1536-dimensional embedding array."
+    notes: "The 13-field count and content_vector field are unique to the Azure arch doc. ChromaDB's schema doc is the distractor."
+
+  - id: q25
+    type: factual
+    question: "In the Azure Cognitive Search setup, which four search types does the MCP server offer and what technology backs each?"
+    match: any
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "Text (Azure Search BM25), Vector (OpenAI embeddings + cosine), Hybrid (BM25 + vector scoring), and Semantic (Azure semantic ranking)."
+    notes: "The four-search-type table is in the Azure arch doc. The ChromaDB arch doc lists only two (vector + metadata), making it a strong distractor."
+
+  - id: q26
+    type: multi_hop
+    question: "Across the two architecture variants, contrast the embedding dimensionality and the typical vector-search latency: what does the Azure Cognitive Search design use versus the local ChromaDB design?"
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "Azure: 1536-dimensional (text-embedding-ada-002) vector search at roughly 200ms. ChromaDB local: 384-dimensional (all-MiniLM-L6-v2) vector search at roughly 50ms."
+    notes: "Multi-hop requiring BOTH architecture docs. Each holds one half (dims + latency). match:all so retrieving only one architecture doc is a partial failure — a real headroom case."
+
+  # ── Embedding-provider depth: local vs migration (distractor-sensitive) ─────────
+  - id: q27
+    type: factual
+    question: "Besides the default fast model, what other local Sentence Transformers models can the embedding service use, and what are their dimensions?"
+    match: any
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "Beyond all-MiniLM-L6-v2 (384), options include all-mpnet-base-v2 (768, higher quality) and multi-qa-MiniLM-L6-cos-v1 (384, QA-optimized). The architecture doc also lists distilbert-base-nli-stsb-mean-tokens / paraphrase-MiniLM-L6-v2."
+    notes: "The alternative-model list appears in both the local-embedding doc and the ChromaDB arch doc, so match:any. Tests recall of a non-default enumerated fact."
+
+  - id: q28
+    type: factual
+    question: "What is the auto-detection order the system uses to pick an embedding provider when multiple are configured?"
+    match: any
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+    should_abstain: false
+    expected_answer: "It checks for an OpenAI API key first, then Azure OpenAI credentials, and falls back to local embeddings if neither is present."
+    notes: "Provider-selection precedence is described only in the local-embedding doc. Relevant to this project's own router-shaped LLM layer thinking."
+
+  - id: q29
+    type: multi_hop
+    question: "If I switch the embedding provider from local to Azure AI Foundry's text-embedding-3-large, which environment variables must I set (provider and dimensions), and what dimension value would I be moving away from?"
+    match: all
+    expected_sources:
+      - AZURE_EMBEDDING_MIGRATION_GUIDE.md
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+    should_abstain: false
+    expected_answer: "Set EMBEDDING_PROVIDER=azure_openai and EMBEDDING_DIMENSIONS=3072 (text-embedding-3-large). You'd be moving away from the local default of 384 dimensions (all-MiniLM-L6-v2)."
+    notes: "Multi-hop: the azure_openai/3072 env settings are in the migration guide; the 384 local baseline is in the local-embedding doc. match:all. Distinct from q05 (which asks trade-offs); this one targets the exact config keys."
+
+  - id: q30
+    type: factual
+    question: "To roll back from Azure AI Foundry embeddings to the local embedding model, what environment variable change is required?"
+    match: any
+    expected_sources:
+      - AZURE_EMBEDDING_MIGRATION_GUIDE.md
+    should_abstain: false
+    expected_answer: "Set EMBEDDING_PROVIDER=local in the .env file and restart services (restoring from the chromadb_data backup if needed)."
+    notes: "The rollback step is unique to the migration guide. Distractor: the local-embedding doc also mentions EMBEDDING_PROVIDER=local for config, but only the migration guide frames it as the rollback action."
+
+  # ── Pipeline internals: idempotency + memory (engineering depth) ────────────────
+  - id: q31
+    type: multi_hop
+    question: "Explain how the pipeline avoids both redundant work and memory blow-up at scale: what file-signature inputs decide whether a document is reprocessed, and what code pattern keeps peak memory roughly constant no matter how many documents are processed?"
+    match: all
+    expected_sources:
+      - DOCUMENT_UPLOAD_ANALYSIS.md
+    should_abstain: false
+    expected_answer: "The signature is path + size + mtime (stored in processed_files.json); unchanged signatures are skipped. A generator pattern (yield one search object at a time instead of building a full list) keeps memory at O(1) regardless of document count."
+    notes: "Two engineering facts that genuinely co-occur in one doc; match:all over a single source still requires that doc be retrieved. Both the signature scheme and the generator pattern are detailed only in the engineering-analysis doc."
+
+  - id: q32
+    type: factual
+    question: "At what point in the upload process does the tracker mark a file as processed, and why is that timing important?"
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_ANALYSIS.md
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "A file is marked processed only AFTER a successful upload, so the tracker's state stays consistent with the search index (failed uploads are not marked, and are retried on the next run)."
+    notes: "The 'mark processed only after successful upload' fact appears in the engineering-analysis doc and the Azure arch doc's file-tracking section, so match:any. Probes atomic-success-tracking understanding."

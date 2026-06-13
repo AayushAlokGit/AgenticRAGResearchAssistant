@@ -46,7 +46,9 @@ are what discriminate. Each run writes a JSON to `eval_runs/` (gitignored) for d
 Run the set before/after every meaningful change and keep the score deltas. The
 change -> measure -> keep-or-revert loop is the real skill this project is practicing.
 
-Status: **`datasets/seed.yaml` v1 (12 questions: 9 answerable + 3 abstention) over the
-frozen 11-doc corpus, and the retrieval scorer, both exist.** Naive baseline (MiniLM,
-800/100 char chunks): **recall@1=0.667, @3=0.889, @5=1.000, MRR=0.889.** Hard case is q05
-(multi_hop, match:all). Answer-quality + cost layers not built yet.
+Status: **`datasets/seed.yaml` v2 (32 questions: 29 answerable + 3 abstention) over the
+frozen 11-doc corpus, and the retrieval scorer, both exist.** v2 hardened the set
+(q13–q32) so recall@5 no longer saturates. Naive baseline (MiniLM, 800/100 char chunks)
+over the 29 recall-eligible questions: **recall@1=0.621, @3=0.759, @5=0.862, MRR=0.843.**
+Genuine failures to tune against: q16 (doc never retrieved), q22/q26/q29 (multi_hop
+match:all, second doc missing). Answer-quality + cost layers not built yet.

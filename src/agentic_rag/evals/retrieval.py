@@ -129,6 +129,16 @@ def aggregate(results: List[QuestionResult]) -> tuple[Dict[int, float], float]:
                 hit_count += 1
         recalls[k] = hit_count / len(results) if results else 0.0
 
+    # Why MRR matters: recall@k is position-blind — the right doc at rank 1 and at rank 5
+    # score identically. MRR is rank-sensitive (1/rank), so it catches a retriever that
+    # technically returns the right doc but buries it under distractors — a regression
+    # recall@5 can't see, yet one that hurts the generator (it reads top hits first).
+    #
+    # Interpreting the value: MRR is the average of 1/rank, so it reads back as "how high,
+    # on average, is the first right doc?" 1.0 = always rank 1 (perfect); 0.5 = rank 2 on
+    # average; 0.33 = rank 3; closer to 0 = right doc consistently deep or missing.
+    # Example: 3 questions whose first relevant hit lands at ranks [1, 1, 2] give
+    # reciprocals [1.0, 1.0, 0.5] -> MRR = 2.5 / 3 = 0.833.
     reciprocal_ranks = []
     for r in results:
         if r.first_relevant_rank is None:
