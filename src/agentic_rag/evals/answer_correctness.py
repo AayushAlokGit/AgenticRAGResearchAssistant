@@ -38,11 +38,11 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import List, Optional
 
-from agentic_rag.config import load_config, resolve_path
+from agentic_rag.config import load_config
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
+from agentic_rag.evals.runs import eval_run_path
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.llm.provider import build_llm
 from agentic_rag.rag.answer import generate_answer, load_prompt
@@ -214,9 +214,8 @@ def report(results: List[QAResult], config: dict) -> dict:
 
 
 def persist(summary: dict, results: List[QAResult], config: dict) -> None:
-    out_dir = resolve_path("./eval_runs")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    """Write a run record to eval_runs/answer_correctness/<timestamp>.json (gitignored)."""
+    path = eval_run_path("answer_correctness")
 
     per_question = []
     for r in results:
@@ -246,12 +245,11 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
         })
 
     record = {
-        "timestamp": stamp,
+        "timestamp": path.stem,
         "metric": "answer_correctness",
         "summary": summary,
         "per_question": per_question,
     }
-    path = out_dir / f"answer_correctness_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     logger.info(f"\n[saved] {path}")
 

@@ -28,11 +28,11 @@ import argparse
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from agentic_rag.config import load_config, resolve_path
+from agentic_rag.config import load_config
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
+from agentic_rag.evals.runs import eval_run_path
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
@@ -224,10 +224,8 @@ def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
 
 
 def persist(summary: dict, results: List[QuestionResult], mode: str, config: dict) -> None:
-    """Write a timestamped JSON to eval_runs/ (gitignored) so baselines are diffable."""
-    out_dir = resolve_path("./eval_runs")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    """Write a run record to eval_runs/retrieval_recall/<timestamp>.json (gitignored)."""
+    path = eval_run_path("retrieval_recall")
 
     per_question = []
     for r in results:
@@ -252,7 +250,7 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
         recall_summary[str(k)] = summary["recall"][k]
 
     record = {
-        "timestamp": stamp,
+        "timestamp": path.stem,
         "metric": "retrieval_recall",
         "mode": mode,
         "k_values": list(K_VALUES),
@@ -265,7 +263,6 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
         "per_question": per_question,
     }
 
-    path = out_dir / f"retrieval_recall_{mode}_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     logger.info(f"\n[saved] {path}")
 
