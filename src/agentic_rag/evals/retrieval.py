@@ -6,22 +6,19 @@ change->measure loop grades against (EVALUATION_PRINCIPLES.md, P4 rung 1).
 
 We report recall at SEVERAL cutoffs plus MRR, on purpose: recall@5 over an 11-doc
 corpus saturates at 1.0 (no headroom — can't show improvement, only regressions). The
-stricter cutoffs and the ranking-sensitive MRR are what actually discriminate between a
-better and worse retriever.
+stricter cutoffs and the ranking-sensitive MRR are what actually discriminate.
 
-Per answerable question, over the unique source docs within the first *k* retrieved chunks:
+Per answerable question, over the source docs within the first *k* retrieved chunks:
   match: any  -> hit if AT LEAST ONE expected_source is retrieved
   match: all  -> hit if EVERY expected_source is retrieved (multi-hop; partial = miss)
 
-  recall@k = hits / answerable questions
+  recall@k = (questions that hit at k) / (answerable questions)
   MRR      = mean of 1/rank, where rank is the position of the first chunk whose source
-             is an expected_source (0 if none in the retrieved depth). Ranking-sensitive:
-             rewards putting the right doc higher. (For match:all it only sees the first
-             relevant doc — a known MRR limitation; recall@k carries the all-or-nothing part.)
+             is an expected_source (0 if none found). Rewards ranking the right doc high.
 
 Abstention questions (``should_abstain: true``, no expected_sources) are NOT retrieval
 tests — abstaining is a generator/agent decision scored later. Excluded from recall/MRR;
-we report their top-1 similarity instead (the signal a future abstain-threshold uses).
+we report their top-1 similarity instead.
 
 Run (needs an ingested store):
     python -m agentic_rag.evals.retrieval
@@ -50,35 +47,103 @@ class QuestionResult:
     top_score: float                   # similarity of the #1 hit
     recall_at: Dict[int, Optional[bool]] = field(default_factory=dict)  # k -> hit (None=abstention)
     first_relevant_rank: Optional[int] = None   # 1-based rank of first expected-source chunk
-    missing_at_depth: List[str] = field(default_factory=list)           # expected not found at all
+    missing_at_depth: List[str] = field(default_factory=list)           # expected docs never found
 
 
-def _hit_at_k(expected: List[str], match: str, sources_in_order: List[str], k: int) -> bool:
-    """Apply any/all recall over the sources of the first k retrieved chunks."""
-    window = set(sources_in_order[:k])
-    found = [s for s in expected if s in window]
+# ───────────────────────────── scoring one question ─────────────────────────────
+
+def find_first_relevant_rank(chunk_sources: List[str], expected_sources: List[str]) -> Optional[int]:
+    """Return the 1-based rank of the first retrieved chunk whose source is expected.
+
+    Returns None if none of the retrieved chunks came from an expected document.
+    """
+    for index, source in enumerate(chunk_sources):
+        if source in expected_sources:
+            return index + 1          # +1 because ranks are 1-based, not 0-based
+    return None
+
+
+def hit_at_k(expected_sources: List[str], match: str, chunk_sources: List[str], k: int) -> bool:
+    """Did we retrieve the expected document(s) within the first k chunks?
+
+    match == "all": every expected source must be present (multi-hop; partial = miss).
+    match == "any": at least one expected source is enough.
+    """
+    sources_in_top_k = set(chunk_sources[:k])
+
+    found = []
+    for source in expected_sources:
+        if source in sources_in_top_k:
+            found.append(source)
+
     if match == "all":
-        return len(expected) > 0 and len(found) == len(expected)
+        return len(expected_sources) > 0 and len(found) == len(expected_sources)
     return len(found) > 0
 
 
+def unique_in_order(items: List[str]) -> List[str]:
+    """Drop duplicates while keeping first-seen order (best-first stays best-first)."""
+    seen = set()
+    result = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
 def score_question(q: EvalQuestion, hits: List[Hit]) -> QuestionResult:
-    chunk_sources = [h.source for h in hits]               # one entry per chunk, ranked
-    seen, unique_sources = set(), []
-    for s in chunk_sources:
-        if s not in seen:
-            seen.add(s)
-            unique_sources.append(s)
+    # One source filename per retrieved chunk, in rank order (may repeat across chunks).
+    chunk_sources = [hit.source for hit in hits]
+    unique_sources = unique_in_order(chunk_sources)
     top_score = hits[0].score if hits else 0.0
 
+    # Abstention questions aren't a retrieval test — mark recall N/A and stop.
     if q.should_abstain:
-        return QuestionResult(q, unique_sources, top_score, {k: None for k in K_VALUES})
+        recall_na = {k: None for k in K_VALUES}
+        return QuestionResult(q, unique_sources, top_score, recall_na)
 
-    # First rank (1-based, over chunks) whose source is an expected source -> drives MRR.
-    first_rank = next((i + 1 for i, s in enumerate(chunk_sources) if s in q.expected_sources), None)
-    recall_at = {k: _hit_at_k(q.expected_sources, q.match, chunk_sources, k) for k in K_VALUES}
-    missing = [s for s in q.expected_sources if s not in seen]
+    first_rank = find_first_relevant_rank(chunk_sources, q.expected_sources)
+
+    recall_at = {}
+    for k in K_VALUES:
+        recall_at[k] = hit_at_k(q.expected_sources, q.match, chunk_sources, k)
+
+    missing = []
+    for source in q.expected_sources:
+        if source not in unique_sources:
+            missing.append(source)
+
     return QuestionResult(q, unique_sources, top_score, recall_at, first_rank, missing)
+
+
+# ───────────────────────────── aggregating + running ─────────────────────────────
+
+def mean(numbers: List[float]) -> float:
+    if not numbers:
+        return 0.0
+    return sum(numbers) / len(numbers)
+
+
+def aggregate(results: List[QuestionResult]) -> tuple[Dict[int, float], float]:
+    """Compute recall@k (for each k) and MRR over a list of answerable results."""
+    recalls = {}
+    for k in K_VALUES:
+        hit_count = 0
+        for r in results:
+            if r.recall_at[k]:
+                hit_count += 1
+        recalls[k] = hit_count / len(results) if results else 0.0
+
+    reciprocal_ranks = []
+    for r in results:
+        if r.first_relevant_rank is None:
+            reciprocal_ranks.append(0.0)
+        else:
+            reciprocal_ranks.append(1.0 / r.first_relevant_rank)
+    mrr = mean(reciprocal_ranks)
+
+    return recalls, mrr
 
 
 def run(save: bool = True) -> dict:
@@ -91,24 +156,42 @@ def run(save: bool = True) -> dict:
     embedder = LocalEmbedder(config["embedding"]["model"])
 
     questions = load_eval_dataset()
-    results = [score_question(q, store.query(embedder.embed_query(q.question), depth)) for q in questions]
 
-    summary = _report(results, config)
+    results = []
+    for q in questions:
+        query_vector = embedder.embed_query(q.question)
+        hits = store.query(query_vector, depth)
+        results.append(score_question(q, hits))
+
+    summary = report(results, config)
     if save:
-        _persist(summary, results, config)
+        persist(summary, results, config)
     return summary
 
 
-def _report(results: List[QuestionResult], config: dict) -> dict:
-    answerable = [r for r in results if not r.q.should_abstain]
-    abstain = [r for r in results if r.q.should_abstain]
+# ───────────────────────────── printing + saving ─────────────────────────────
+
+def report(results: List[QuestionResult], config: dict) -> dict:
+    # Split answerable questions from abstention ones (which don't count toward recall).
+    answerable = []
+    abstain = []
+    for r in results:
+        if r.q.should_abstain:
+            abstain.append(r)
+        else:
+            answerable.append(r)
 
     print(f"\n=== Retrieval Recall (depth {max(K_VALUES)}) ===")
     print(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
 
     print(f"ANSWERABLE ({len(answerable)})   rank = position of first expected-source chunk")
     for r in answerable:
-        flags = " ".join(f"@{k}:{'Y' if r.recall_at[k] else 'n'}" for k in K_VALUES)
+        flag_parts = []
+        for k in K_VALUES:
+            mark = "Y" if r.recall_at[k] else "n"
+            flag_parts.append(f"@{k}:{mark}")
+        flags = " ".join(flag_parts)
+
         rank = r.first_relevant_rank if r.first_relevant_rank else "-"
         line = f"  {r.q.id:<4} {r.q.type:<9} match:{r.q.match:<3} {flags}  rank={rank!s:<2} top={r.top_score:.3f}"
         if r.missing_at_depth:
@@ -117,23 +200,29 @@ def _report(results: List[QuestionResult], config: dict) -> dict:
 
     print(f"\nABSTENTION ({len(abstain)}) — excluded; top-1 score (lower = easier to refuse):")
     for r in abstain:
-        print(f"  {r.q.id:<4} top={r.top_score:.3f}  nearest: {r.retrieved_sources[0] if r.retrieved_sources else '-'}")
+        nearest = r.retrieved_sources[0] if r.retrieved_sources else "-"
+        print(f"  {r.q.id:<4} top={r.top_score:.3f}  nearest: {nearest}")
 
-    # Overall + by-type recall at each k, and MRR.
-    recalls = {k: _mean(1.0 if r.recall_at[k] else 0.0 for r in answerable) for k in K_VALUES}
-    mrr = _mean((1.0 / r.first_relevant_rank if r.first_relevant_rank else 0.0) for r in answerable)
-
+    # Overall numbers.
+    recalls, mrr = aggregate(answerable)
     print(f"\nSUMMARY  (n={len(answerable)} answerable)")
-    print("  recall  " + "  ".join(f"@{k}={recalls[k]:.3f}" for k in K_VALUES) + f"   MRR={mrr:.3f}")
+    recall_str = "  ".join(f"@{k}={recalls[k]:.3f}" for k in K_VALUES)
+    print(f"  recall  {recall_str}   MRR={mrr:.3f}")
+
+    # Same numbers sliced by question type, so you can see WHERE it's weak.
     types = sorted({r.q.type for r in answerable})
     for t in types:
-        sub = [r for r in answerable if r.q.type == t]
-        rk = "  ".join(f"@{k}={_mean(1.0 if r.recall_at[k] else 0.0 for r in sub):.3f}" for k in K_VALUES)
-        sub_mrr = _mean((1.0 / r.first_relevant_rank if r.first_relevant_rank else 0.0) for r in sub)
-        print(f"    {t:<10} {rk}   MRR={sub_mrr:.3f}   (n={len(sub)})")
+        subset = []
+        for r in answerable:
+            if r.q.type == t:
+                subset.append(r)
+        sub_recalls, sub_mrr = aggregate(subset)
+        sub_recall_str = "  ".join(f"@{k}={sub_recalls[k]:.3f}" for k in K_VALUES)
+        print(f"    {t:<10} {sub_recall_str}   MRR={sub_mrr:.3f}   (n={len(subset)})")
+
     if abstain:
-        s = [r.top_score for r in abstain]
-        print(f"  abstention top-1: min={min(s):.3f} mean={_mean(iter(s)):.3f} max={max(s):.3f}")
+        abstain_scores = [r.top_score for r in abstain]
+        print(f"  abstention top-1: min={min(abstain_scores):.3f} mean={mean(abstain_scores):.3f} max={max(abstain_scores):.3f}")
 
     return {
         "recall": recalls,
@@ -143,16 +232,33 @@ def _report(results: List[QuestionResult], config: dict) -> dict:
     }
 
 
-def _mean(values) -> float:
-    vals = list(values)
-    return sum(vals) / len(vals) if vals else 0.0
-
-
-def _persist(summary: dict, results: List[QuestionResult], config: dict) -> None:
+def persist(summary: dict, results: List[QuestionResult], config: dict) -> None:
     """Write a timestamped JSON to eval_runs/ (gitignored) so baselines are diffable."""
     out_dir = resolve_path("./eval_runs")
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    per_question = []
+    for r in results:
+        recall_at = {}
+        for k in K_VALUES:
+            recall_at[str(k)] = r.recall_at[k]
+        per_question.append({
+            "id": r.q.id,
+            "type": r.q.type,
+            "match": r.q.match,
+            "recall_at": recall_at,
+            "first_relevant_rank": r.first_relevant_rank,
+            "top_score": round(r.top_score, 4),
+            "expected": r.q.expected_sources,
+            "missing": r.missing_at_depth,
+            "retrieved": r.retrieved_sources,
+        })
+
+    recall_summary = {}
+    for k in K_VALUES:
+        recall_summary[str(k)] = summary["recall"][k]
+
     record = {
         "timestamp": stamp,
         "metric": "retrieval_recall",
@@ -162,19 +268,10 @@ def _persist(summary: dict, results: List[QuestionResult], config: dict) -> None
             "chunk_size": config["retrieval"]["chunk_size"],
             "chunk_overlap": config["retrieval"]["chunk_overlap"],
         },
-        "summary": {**summary, "recall": {str(k): v for k, v in summary["recall"].items()}},
-        "per_question": [
-            {
-                "id": r.q.id, "type": r.q.type, "match": r.q.match,
-                "recall_at": {str(k): r.recall_at[k] for k in K_VALUES},
-                "first_relevant_rank": r.first_relevant_rank,
-                "top_score": round(r.top_score, 4),
-                "expected": r.q.expected_sources, "missing": r.missing_at_depth,
-                "retrieved": r.retrieved_sources,
-            }
-            for r in results
-        ],
+        "summary": {**summary, "recall": recall_summary},
+        "per_question": per_question,
     }
+
     path = out_dir / f"retrieval_recall_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     print(f"\n[saved] {path}")
