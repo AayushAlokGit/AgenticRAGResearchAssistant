@@ -155,11 +155,11 @@ def aggregate(results: List[QuestionResult]) -> tuple[Dict[int, float], float]:
     return recalls, mrr
 
 
-def run(save: bool = True, mode: Optional[str] = None) -> dict:
+def run(save: bool = True, mode: Optional[str] = None, rerank: Optional[bool] = None) -> dict:
     config = load_config()
     depth = max(K_VALUES)
 
-    retriever = build_retriever(config, mode=mode)
+    retriever = build_retriever(config, mode=mode, rerank=rerank)
 
     # Recall needs a ground-truth doc to check against, so only score questions that
     # declare expected_sources.
@@ -282,11 +282,16 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score retrieval recall + MRR over the seed eval set.")
     parser.add_argument("--mode", choices=["dense", "hybrid"], default=None,
-                        help="Retriever to score (default: config retrieval.mode).")
+                        help="Stage-1 retriever to score (default: config retrieval.mode).")
+    # Tri-state rerank: --rerank forces on, --no-rerank forces off, neither uses config.
+    parser.add_argument("--rerank", dest="rerank", action="store_true", default=None,
+                        help="Force the cross-encoder rerank stage ON (overrides config).")
+    parser.add_argument("--no-rerank", dest="rerank", action="store_false",
+                        help="Force the cross-encoder rerank stage OFF (overrides config).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
     configure_run_logging("evals/retrieval")
-    run(save=not args.no_save, mode=args.mode)
+    run(save=not args.no_save, mode=args.mode, rerank=args.rerank)
 
 
 if __name__ == "__main__":

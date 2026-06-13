@@ -53,6 +53,25 @@ class HybridRetriever:
         return reciprocal_rank_fusion(dense_hits, sparse_hits, self.rrf_k, k)
 
 
+class RerankRetriever:
+    """Stage-2 wrapper: pull a candidate pool from any base retriever, then cross-encode.
+
+    Decorator over dense OR hybrid — reranking is orthogonal to how candidates were found.
+    Asks the base for `candidate_k` chunks (a wide net), then the cross-encoder re-scores
+    that pool for precision and returns the top k.
+    """
+
+    def __init__(self, base, reranker, candidate_k: int):
+        self.base = base
+        self.reranker = reranker
+        self.candidate_k = candidate_k
+        self.name = f"{base.name}+rerank"
+
+    def query(self, text: str, k: int) -> List[Hit]:
+        candidates = self.base.query(text, self.candidate_k)
+        return self.reranker.rerank(text, candidates, k)
+
+
 def reciprocal_rank_fusion(dense_hits: List[Hit], sparse_hits: List[Hit], rrf_k: int, top_k: int) -> List[Hit]:
     """Fuse two ranked lists by Reciprocal Rank Fusion.
 
@@ -104,8 +123,30 @@ def reciprocal_rank_fusion(dense_hits: List[Hit], sparse_hits: List[Hit], rrf_k:
     return fused_hits
 
 
-def build_retriever(config: dict, mode: Optional[str] = None):
-    """Construct the retriever named by ``mode`` (falls back to config ``retrieval.mode``)."""
+def build_base_retriever(config: dict, mode: str, dense: DenseRetriever, store: ChromaVectorStore):
+    """Build the stage-1 retriever (dense or hybrid) — the candidate generator."""
+    if mode == "dense":
+        return dense
+
+    if mode == "hybrid":
+        hybrid_cfg = config["retrieval"].get("hybrid", {})
+        rrf_k = hybrid_cfg.get("rrf_k", 60)
+        candidate_k = hybrid_cfg.get("candidate_k", 20)
+        chunks = store.all_chunks()
+        bm25 = BM25Index(chunks)
+        logger.debug("BM25 index built over %d chunks (rrf_k=%s, candidate_k=%s)", len(chunks), rrf_k, candidate_k)
+        return HybridRetriever(dense, bm25, rrf_k=rrf_k, candidate_k=candidate_k)
+
+    raise ValueError(f"Unknown retrieval mode: {mode!r} (expected 'dense' or 'hybrid')")
+
+
+def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[bool] = None):
+    """Construct the retriever: stage-1 base (``mode``), optionally wrapped with reranking.
+
+    ``mode``   — "dense" | "hybrid" (falls back to config ``retrieval.mode``).
+    ``rerank`` — True/False to force the cross-encoder stage on/off; None uses
+                 config ``retrieval.rerank.enabled``. Lets the eval A/B rerank cleanly.
+    """
     retrieval_cfg = config["retrieval"]
     if mode is None:
         mode = retrieval_cfg.get("mode", "dense")
@@ -116,17 +157,21 @@ def build_retriever(config: dict, mode: Optional[str] = None):
     embedder = LocalEmbedder(config["embedding"]["model"])
     dense = DenseRetriever(embedder, store)
 
-    logger.info("building retriever: mode=%s, store holds %d chunks", mode, store.count())
-    if mode == "dense":
-        return dense
+    base = build_base_retriever(config, mode, dense, store)
 
-    if mode == "hybrid":
-        hybrid_cfg = retrieval_cfg.get("hybrid", {})
-        rrf_k = hybrid_cfg.get("rrf_k", 60)
-        candidate_k = hybrid_cfg.get("candidate_k", 20)
-        chunks = store.all_chunks()
-        bm25 = BM25Index(chunks)
-        logger.debug("BM25 index built over %d chunks (rrf_k=%s, candidate_k=%s)", len(chunks), rrf_k, candidate_k)
-        return HybridRetriever(dense, bm25, rrf_k=rrf_k, candidate_k=candidate_k)
+    rerank_cfg = retrieval_cfg.get("rerank", {})
+    if rerank is None:
+        rerank = rerank_cfg.get("enabled", False)
 
-    raise ValueError(f"Unknown retrieval mode: {mode!r} (expected 'dense' or 'hybrid')")
+    logger.info("building retriever: mode=%s, rerank=%s, store holds %d chunks", mode, rerank, store.count())
+    if not rerank:
+        return base
+
+    # Stage 2: wrap the base in a cross-encoder reranker (imported here so the dependency
+    # only loads when reranking is actually on).
+    from agentic_rag.rag.rerank import CrossEncoderReranker, DEFAULT_MODEL
+
+    reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL))
+    candidate_k = rerank_cfg.get("candidate_k", 20)
+    logger.debug("reranking on: candidate_k=%s -> top_k", candidate_k)
+    return RerankRetriever(base, reranker, candidate_k)

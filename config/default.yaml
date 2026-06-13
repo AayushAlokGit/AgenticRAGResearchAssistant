@@ -52,6 +52,13 @@ retrieval:
     # Hybrid = dense (vector) + BM25 (keyword), fused by Reciprocal Rank Fusion.
     rrf_k: 60 # RRF damping constant (standard default)
     candidate_k: 20 # chunks pulled from EACH retriever before fusing down to top_k
+  rerank:
+    # Stage 2 (DD-014): a cross-encoder re-scores each (query, chunk) PAIR jointly for
+    # precision, fixing "right doc, wrong chunk" misses the bi-encoder/RRF ordering can't.
+    # A/B won decisively (recall@3 0.793->0.931, @5 0.897->1.000, MRR 0.903->0.948) — ON (DD-014).
+    enabled: true
+    model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local, CPU-friendly cross-encoder
+    candidate_k: 20 # chunks the stage-1 base hands the reranker (re-scored down to top_k)
 
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
