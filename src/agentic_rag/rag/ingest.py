@@ -25,14 +25,18 @@ beat this baseline on the eval set before it stays.
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import List
 
 from agentic_rag.config import load_config, resolve_path
+from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.rag.chunking import chunk_text
 from agentic_rag.rag.embeddings import LocalEmbedder
 from agentic_rag.rag.tracker import DocumentProcessingTracker
 from agentic_rag.rag.vector_store import ChromaVectorStore
+
+logger = logging.getLogger(__name__)
 
 # Files in the corpus that are scaffolding, not corpus content (the eval set is written
 # against the 11 real docs; the README explains the folder).
@@ -56,15 +60,15 @@ def ingest(force: bool = False) -> None:
     tracker = DocumentProcessingTracker(resolve_path(config["ingestion"]["tracking_file"]))
     embedder = LocalEmbedder(config["embedding"]["model"])
 
-    print(f"[ingest] corpus = {corpus_root}")
+    logger.info(f"[ingest] corpus = {corpus_root}")
     if force:
-        print("[ingest] --force: wiping collection + tracker")
+        logger.info("[ingest] --force: wiping collection + tracker")
         store.reset()
         tracker.clear()
 
     discovered = discover_markdown(corpus_root)
     discovered_keys = {str(p) for p in discovered}
-    print(f"[ingest] discovered {len(discovered)} markdown file(s)")
+    logger.info(f"[ingest] discovered {len(discovered)} markdown file(s)")
 
     # --- Deletions: files tracked on a previous run but gone from disk now ---
     removed = 0
@@ -73,7 +77,7 @@ def ingest(force: bool = False) -> None:
             store.delete_by_source(Path(key).name)
             tracker.remove(key)
             removed += 1
-            print(f"   - deleted: {Path(key).name} (purged from store)")
+            logger.info(f"   - deleted: {Path(key).name} (purged from store)")
 
     # --- New / changed / unchanged ---
     added = changed = skipped = total_chunks = 0
@@ -97,17 +101,17 @@ def ingest(force: bool = False) -> None:
 
         if is_update:
             changed += 1
-            print(f"   ~ changed: {source} ({len(chunks)} chunks)")
+            logger.info(f"   ~ changed: {source} ({len(chunks)} chunks)")
         else:
             added += 1
-            print(f"   + added:   {source} ({len(chunks)} chunks)")
+            logger.info(f"   + added:   {source} ({len(chunks)} chunks)")
 
     tracker.save()
 
-    print("\n[ingest] done.")
-    print(f"   added={added} changed={changed} skipped={skipped} deleted={removed}")
-    print(f"   chunks written this run = {total_chunks}")
-    print(f"   collection now holds {store.count()} chunks")
+    logger.info("\n[ingest] done.")
+    logger.info(f"   added={added} changed={changed} skipped={skipped} deleted={removed}")
+    logger.info(f"   chunks written this run = {total_chunks}")
+    logger.info(f"   collection now holds {store.count()} chunks")
 
 
 def main() -> None:
@@ -116,7 +120,9 @@ def main() -> None:
         "--force", action="store_true",
         help="Wipe the collection + tracker and rebuild from scratch.",
     )
-    ingest(force=parser.parse_args().force)
+    args = parser.parse_args()
+    configure_run_logging("ingestion")
+    ingest(force=args.force)
 
 
 if __name__ == "__main__":

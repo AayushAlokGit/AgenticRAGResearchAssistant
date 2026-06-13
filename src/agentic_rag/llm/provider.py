@@ -12,10 +12,14 @@ which provider answered.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Dict, List
 
 from agentic_rag.config import resolve_path
+
+logger = logging.getLogger(__name__)
 
 Message = Dict[str, str]  # {"role": "system"|"user"|"assistant", "content": "..."}
 
@@ -27,7 +31,8 @@ class LLMError(RuntimeError):
 class GroqProvider:
     name = "groq"
 
-    def __init__(self, model: str, api_key: str, temperature: float, max_tokens: int):
+    def __init__(self, model: str, api_key: str, temperature: float, max_tokens: int,
+                 max_retries: int = 5, timeout: float = 30.0):
         # Imported lazily so importing this module stays cheap and doesn't require the SDK
         # until an LLM is actually built.
         from groq import Groq
@@ -35,15 +40,26 @@ class GroqProvider:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.client = Groq(api_key=api_key)
+        # max_retries/timeout drive the SDK's built-in exponential backoff + jitter on
+        # retryable errors (429 rate limit, 5xx, timeouts, connection drops).
+        self.client = Groq(api_key=api_key, max_retries=max_retries, timeout=timeout)
 
     def complete(self, messages: List[Message]) -> str:
+        logger.debug("groq completion: model=%s, %d message(s)", self.model, len(messages))
+        start = time.perf_counter()
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
+        elapsed = time.perf_counter() - start
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            logger.info("groq completion ok: %.2fs, tokens prompt=%s completion=%s",
+                        elapsed, usage.prompt_tokens, usage.completion_tokens)
+        else:
+            logger.info("groq completion ok: %.2fs", elapsed)
         return response.choices[0].message.content
 
 
@@ -64,6 +80,7 @@ class LLMRouter:
             try:
                 return provider.complete(messages)
             except Exception as exc:  # noqa: BLE001 — we genuinely want to try the next tier
+                logger.warning("provider %s failed (will try next tier if any): %s", provider.name, exc)
                 errors.append(f"{provider.name}: {exc}")
         raise LLMError("All LLM providers failed: " + " | ".join(errors))
 
@@ -78,6 +95,8 @@ def build_llm(config: dict) -> LLMRouter:
     llm_cfg = config["llm"]
     temperature = llm_cfg["temperature"]
     max_tokens = llm_cfg["max_tokens"]
+    max_retries = llm_cfg.get("max_retries", 5)
+    timeout = llm_cfg.get("timeout", 30.0)
 
     providers = []
     for provider_name in llm_cfg["provider_order"]:
@@ -86,7 +105,7 @@ def build_llm(config: dict) -> LLMRouter:
             if not api_key:
                 continue  # no key → skip this tier (router-shaped: other tiers can still run)
             model = llm_cfg["models"]["groq"]
-            providers.append(GroqProvider(model, api_key, temperature, max_tokens))
+            providers.append(GroqProvider(model, api_key, temperature, max_tokens, max_retries, timeout))
         else:
             # Other providers (anthropic, ollama) aren't wired yet — no keys exist. They're
             # listed in config for the future; skipping keeps the router single-tier for now.

@@ -15,6 +15,11 @@ llm:
     ollama: llama3.1 # reference only; unused until Ollama is set up
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
+  # The Groq SDK retries 429/5xx/timeout/connection errors with exponential backoff +
+  # jitter (honoring Retry-After). Bumped above the default 2 for eval bursts. The router
+  # falls through to the NEXT provider only after a provider exhausts these retries.
+  max_retries: 5
+  timeout: 30.0 # seconds per request
 
 embedding:
   # Local + free + offline; needs NO API key. NOTE: Groq has no embeddings endpoint

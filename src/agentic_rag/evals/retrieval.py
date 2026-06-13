@@ -26,14 +26,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from agentic_rag.config import load_config, resolve_path
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
+from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
+
+logger = logging.getLogger(__name__)
 
 # Recall cutoffs to report. Spans from the discriminating (1) to the saturating (5).
 K_VALUES = (1, 3, 5)
@@ -177,10 +181,10 @@ def run(save: bool = True, mode: Optional[str] = None) -> dict:
 # ───────────────────────────── printing + saving ─────────────────────────────
 
 def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
-    print(f"\n=== Retrieval Recall (mode={mode}, max chunks {max(K_VALUES)}) ===")
-    print(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
+    logger.info(f"\n=== Retrieval Recall (mode={mode}, max chunks {max(K_VALUES)}) ===")
+    logger.info(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
 
-    print(f"QUESTIONS ({len(results)})   rank = position of first expected-source chunk")
+    logger.info(f"QUESTIONS ({len(results)})   rank = position of first expected-source chunk")
     for r in results:
         flag_parts = []
         for k in K_VALUES:
@@ -192,13 +196,13 @@ def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
         line = f"  {r.q.id:<4} {r.q.type:<9} match:{r.q.match:<3} {flags}  rank={rank!s:<2} top={r.top_score:.3f}"
         if r.missing_at_depth:
             line += f"  MISSING: {', '.join(r.missing_at_depth)}"
-        print(line)
+        logger.info(line)
 
     # Overall numbers.
     recalls, mrr = aggregate(results)
-    print(f"\nSUMMARY  (n={len(results)} scored)")
+    logger.info(f"\nSUMMARY  (n={len(results)} scored)")
     recall_str = "  ".join(f"@{k}={recalls[k]:.3f}" for k in K_VALUES)
-    print(f"  recall  {recall_str}   MRR={mrr:.3f}")
+    logger.info(f"  recall  {recall_str}   MRR={mrr:.3f}")
 
     # Same numbers sliced by question type, so you can see WHERE it's weak.
     types = sorted({r.q.type for r in results})
@@ -209,7 +213,7 @@ def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
                 subset.append(r)
         sub_recalls, sub_mrr = aggregate(subset)
         sub_recall_str = "  ".join(f"@{k}={sub_recalls[k]:.3f}" for k in K_VALUES)
-        print(f"    {t:<10} {sub_recall_str}   MRR={sub_mrr:.3f}   (n={len(subset)})")
+        logger.info(f"    {t:<10} {sub_recall_str}   MRR={sub_mrr:.3f}   (n={len(subset)})")
 
     return {
         "mode": mode,
@@ -263,7 +267,7 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
 
     path = out_dir / f"retrieval_recall_{mode}_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    print(f"\n[saved] {path}")
+    logger.info(f"\n[saved] {path}")
 
 
 def main() -> None:
@@ -272,6 +276,7 @@ def main() -> None:
                         help="Retriever to score (default: config retrieval.mode).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
+    configure_run_logging("evals")
     run(save=not args.no_save, mode=args.mode)
 
 

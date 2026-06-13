@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,9 +39,12 @@ from typing import List, Optional
 
 from agentic_rag.config import load_config, resolve_path
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
+from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.llm.provider import build_llm
 from agentic_rag.rag.answer import generate_answer, load_prompt
 from agentic_rag.rag.retriever import build_retriever
+
+logger = logging.getLogger(__name__)
 
 ABSTENTION_PHRASE = "not enough information"
 
@@ -116,7 +120,7 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
     if limit is not None:
         questions = questions[:limit]
 
-    print(f"Scoring {len(questions)} questions (generate + judge LLM calls)...\n")
+    logger.info(f"Scoring {len(questions)} questions (generate + judge LLM calls)...\n")
     results = []
     for i, q in enumerate(questions, start=1):
         generated = generate_answer(q.question, retriever, llm, system_prompt, top_k)
@@ -129,7 +133,7 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
 
         result = QAResult(q, generated.answer, abstained, verdict, reason)
         results.append(result)
-        print(f"  [{i:2d}/{len(questions)}] {q.id} {q.type:<10} {describe(result)}")
+        logger.info(f"  [{i:2d}/{len(questions)}] {q.id} {q.type:<10} {describe(result)}")
 
     summary = report(results, config)
     if save:
@@ -157,37 +161,37 @@ def report(results: List[QAResult], config: dict) -> dict:
     abstained_correctly = [r for r in abstention if r.abstained]
 
     model = config["llm"]["models"]["groq"]
-    print(f"\n=== Answer Quality (generator = judge = {model}) ===")
-    print("note: same model generates and grades (self-eval bias); LLM output is non-deterministic\n")
+    logger.info(f"\n=== Answer Quality (generator = judge = {model}) ===")
+    logger.info("note: same model generates and grades (self-eval bias); LLM output is non-deterministic\n")
 
     # List the failures explicitly — that's what you act on.
-    print("FAILURES:")
+    logger.info("FAILURES:")
     any_failure = False
     for r in false_abstentions:
         any_failure = True
-        print(f"  {r.q.id}  FALSE ABSTENTION (answerable, but refused)")
+        logger.info(f"  {r.q.id}  FALSE ABSTENTION (answerable, but refused)")
     for r in incorrect:
         any_failure = True
-        print(f"  {r.q.id}  INCORRECT — {r.judge_reason.splitlines()[-1] if r.judge_reason else ''}")
+        logger.info(f"  {r.q.id}  INCORRECT — {r.judge_reason.splitlines()[-1] if r.judge_reason else ''}")
     for r in partial:
         any_failure = True
-        print(f"  {r.q.id}  PARTIAL — {r.judge_reason.splitlines()[-1] if r.judge_reason else ''}")
+        logger.info(f"  {r.q.id}  PARTIAL — {r.judge_reason.splitlines()[-1] if r.judge_reason else ''}")
     for r in abstention:
         if not r.abstained:
             any_failure = True
-            print(f"  {r.q.id}  FAILED TO ABSTAIN (answered an out-of-corpus question)")
+            logger.info(f"  {r.q.id}  FAILED TO ABSTAIN (answered an out-of-corpus question)")
     if not any_failure:
-        print("  (none)")
+        logger.info("  (none)")
 
     n_answerable = len(answerable)
     end_to_end = len(correct) / n_answerable if n_answerable else 0.0
 
-    print(f"\nSUMMARY")
-    print(f"  answerable ({n_answerable}):")
-    print(f"    answered: {len(answered)}   false-abstention: {len(false_abstentions)}")
-    print(f"    of answered -> CORRECT={len(correct)} PARTIAL={len(partial)} INCORRECT={len(incorrect)}")
-    print(f"    end-to-end success (answered AND correct): {len(correct)}/{n_answerable} = {end_to_end:.3f}")
-    print(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
+    logger.info(f"\nSUMMARY")
+    logger.info(f"  answerable ({n_answerable}):")
+    logger.info(f"    answered: {len(answered)}   false-abstention: {len(false_abstentions)}")
+    logger.info(f"    of answered -> CORRECT={len(correct)} PARTIAL={len(partial)} INCORRECT={len(incorrect)}")
+    logger.info(f"    end-to-end success (answered AND correct): {len(correct)}/{n_answerable} = {end_to_end:.3f}")
+    logger.info(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
 
     return {
         "model": model,
@@ -228,7 +232,7 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
     }
     path = out_dir / f"answer_quality_{stamp}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    print(f"\n[saved] {path}")
+    logger.info(f"\n[saved] {path}")
 
 
 def main() -> None:
@@ -240,6 +244,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Only score the first N questions (quick check).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
+    configure_run_logging("evals")
     run(save=not args.no_save, limit=args.limit)
 
 

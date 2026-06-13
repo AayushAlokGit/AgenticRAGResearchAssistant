@@ -11,7 +11,10 @@ Loading is lazy, so merely importing this module stays cheap.
 """
 from __future__ import annotations
 
+import logging
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 
 class LocalEmbedder:
@@ -28,8 +31,9 @@ class LocalEmbedder:
             # path until embeddings are actually needed.
             from sentence_transformers import SentenceTransformer
 
-            print(f"[embedder] loading {self.model_name} (first run downloads ~80MB) ...")
+            logger.info("loading embedding model %s (first run downloads ~80MB) ...", self.model_name)
             self._model = SentenceTransformer(self.model_name)
+            logger.debug("embedding model loaded")
         return self._model
 
     def embed(self, texts: List[str]) -> List[List[float]]:

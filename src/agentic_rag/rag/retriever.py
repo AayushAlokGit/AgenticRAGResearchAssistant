@@ -15,12 +15,15 @@ them against a fixed baseline.
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from agentic_rag.config import resolve_path
 from agentic_rag.rag.bm25 import BM25Index
 from agentic_rag.rag.embeddings import LocalEmbedder
 from agentic_rag.rag.vector_store import ChromaVectorStore, Hit
+
+logger = logging.getLogger(__name__)
 
 
 class DenseRetriever:
@@ -113,6 +116,7 @@ def build_retriever(config: dict, mode: Optional[str] = None):
     embedder = LocalEmbedder(config["embedding"]["model"])
     dense = DenseRetriever(embedder, store)
 
+    logger.info("building retriever: mode=%s, store holds %d chunks", mode, store.count())
     if mode == "dense":
         return dense
 
@@ -120,7 +124,9 @@ def build_retriever(config: dict, mode: Optional[str] = None):
         hybrid_cfg = retrieval_cfg.get("hybrid", {})
         rrf_k = hybrid_cfg.get("rrf_k", 60)
         candidate_k = hybrid_cfg.get("candidate_k", 20)
-        bm25 = BM25Index(store.all_chunks())
+        chunks = store.all_chunks()
+        bm25 = BM25Index(chunks)
+        logger.debug("BM25 index built over %d chunks (rrf_k=%s, candidate_k=%s)", len(chunks), rrf_k, candidate_k)
         return HybridRetriever(dense, bm25, rrf_k=rrf_k, candidate_k=candidate_k)
 
     raise ValueError(f"Unknown retrieval mode: {mode!r} (expected 'dense' or 'hybrid')")
