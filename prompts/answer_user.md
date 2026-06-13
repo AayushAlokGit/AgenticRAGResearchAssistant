@@ -1,5 +1,0 @@
-CONTEXT:
-$context
-
-QUESTION:
-$question

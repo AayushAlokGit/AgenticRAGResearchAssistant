@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
-from string import Template
 from typing import List, Optional
 
 from agentic_rag.config import load_config, resolve_path
@@ -38,20 +37,14 @@ class AnswerResult:
 
 
 def load_prompt(config: dict, name: str) -> str:
-    """Load a versioned prompt by name (e.g. 'answer_system') from the prompts dir."""
+    """Load a versioned prompt by name (e.g. 'answer_with_citations') from the prompts dir.
+
+    Only substantive prompt content (the instructions) is versioned as a file. The trivial
+    CONTEXT/QUESTION wrapper around the dynamic values is built in code (see
+    answer_question) — it's structural scaffolding, not prompt content worth A/B testing.
+    """
     prompt_path = resolve_path(config["prompts"]["dir"]) / f"{name}.md"
     return prompt_path.read_text(encoding="utf-8")
-
-
-def render_prompt(template_text: str, **variables) -> str:
-    """Fill $placeholders in a prompt template with the given values.
-
-    Uses string.Template: only ``$name`` is special, and ``safe_substitute`` leaves any
-    stray ``$`` or unknown token untouched instead of raising — robust against the
-    arbitrary document text we splice into $context. (We avoid str.format here because a
-    literal { or } in document/code content would break it.)
-    """
-    return Template(template_text).safe_substitute(variables)
 
 
 def assemble_context(hits: List[Hit]) -> str:
@@ -71,16 +64,11 @@ def answer_question(question: str, config: Optional[dict] = None) -> AnswerResul
     top_k = config["retrieval"]["top_k"]
     hits = retriever.query(question, top_k)
 
-    # 2. Assemble the two-message prompt from versioned templates: static instructions as
-    #    the system message, and the dynamic context + question rendered into the user
-    #    template's $placeholders.
-    system_prompt = load_prompt(config, "answer_system")
+    # 2. Assemble the two-message prompt: versioned instructions as the system message,
+    #    and the dynamic context + question wrapped in code as the user message.
+    system_prompt = load_prompt(config, "answer_with_citations")
     context = assemble_context(hits)
-    user_message = render_prompt(
-        load_prompt(config, "answer_user"),
-        context=context,
-        question=question,
-    )
+    user_message = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
 
     # 3. Generate the answer.
     llm = build_llm(config)
