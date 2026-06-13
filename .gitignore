@@ -21,6 +21,10 @@ chromadb_data/
 *.sqlite3
 *.duckdb
 
+# Frozen corpus snapshot — not versioned for now (keep only the scaffold README)
+corpus/*
+!corpus/README.md
+
 # Embedding model caches
 .cache/
 models/

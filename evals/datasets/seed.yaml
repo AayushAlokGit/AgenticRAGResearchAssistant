@@ -1,0 +1,156 @@
+# Seed eval set — v1
+#
+# ~12 hand-written questions over the FROZEN 11-doc corpus snapshot in `corpus/`.
+# This file is the source of truth for "did that change help?" (DD-001). It is versioned
+# so a single retriever/prompt/config change can be A/B tested against a fixed baseline.
+#
+# Ground truth was written by reading the cited documents — every `expected_sources`
+# entry has been verified to actually contain the answer. Do not add a source you have
+# not read.
+#
+# ── Schema (per question) ───────────────────────────────────────────────────────────
+#   id                : stable handle (q01…), so score deltas are trackable across runs.
+#   type              : factual | multi_hop | abstention  (lets you slice scores by kind)
+#   question          : the natural-language query fed to the system.
+#   match             : how to score retrieval recall against expected_sources —
+#                         any → retrieving AT LEAST ONE listed source counts as a hit
+#                               (use when the fact is duplicated across docs).
+#                         all → EVERY listed source must be retrieved (true multi-hop;
+#                               partial retrieval is a partial failure, by design).
+#   expected_sources  : corpus filenames that legitimately answer the question.
+#                       Empty for abstention questions.
+#   should_abstain    : true → the answer is NOT in the corpus; success = the system
+#                       responds "not enough info" instead of hallucinating.
+#   expected_answer   : short reference answer (for later answer-quality / LLM-judge
+#                       scoring; retrieval recall does not need it).
+#   notes             : why this question exists / what failure mode it probes.
+#
+# Scoring layers are added over time (see evals/README.md): retrieval recall now (cheap,
+# no LLM), then faithfulness/answer-relevance via LLM-judge, then cost/step metrics.
+#
+# Distractor note: the legacy Azure docs (01-Architecture…, AZURE_EMBEDDING_MIGRATION_GUIDE)
+# are deliberately kept in the corpus as plausible-but-wrong matches for ChromaDB questions.
+# Some corpus docs are not yet any question's expected_source (e.g. CHROMADB_DATA_VIEWING_GUIDE,
+# DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB, REFINED_MCP_TOOLS_PLAN) — they serve as retrieval noise
+# for now and are fair game for future questions.
+
+version: 1
+corpus: ./corpus            # the frozen snapshot these questions are written against
+
+questions:
+  # ── Single-doc factual: baseline retrieval ──────────────────────────────────────
+  - id: q01
+    type: factual
+    question: "Which local embedding model does the ChromaDB architecture use by default, and how many dimensions does it produce?"
+    match: any
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+    expected_answer: "all-MiniLM-L6-v2, which produces 384-dimensional embeddings."
+    notes: "Easiest factual probe. If this misses, dense retrieval is broken."
+
+  - id: q02
+    type: factual
+    question: "Why did the project choose local Sentence Transformers embeddings instead of a cloud embedding API like OpenAI or Azure OpenAI?"
+    match: any
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+    expected_answer: "Zero cost (no per-token or subscription fees), offline/private operation after the one-time model download, and no network latency, rate limits, or API downtime."
+    notes: "Rationale question — answer is concentrated in one doc."
+
+  - id: q03
+    type: factual
+    question: "How does the document-processing pipeline decide whether a file needs to be re-processed (its idempotency / change-detection mechanism)?"
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_ANALYSIS.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    expected_answer: "It computes a file signature from the file path, size, and modification time (mtime), stored in processed_files.json; unchanged files are skipped, and a file is marked processed only after a successful upload."
+    notes: "Fact appears in two docs → match:any."
+
+  - id: q04
+    type: factual
+    question: "What are the five universal MCP tools the server exposes to VS Code?"
+    match: any
+    expected_sources:
+      - MCP_SERVER_SETUP.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - PROJECT_README.md
+    expected_answer: "search_documents, get_document_content, get_document_contexts, explore_document_structure, and get_index_summary."
+    notes: "Enumerated fact present in several docs; tests whether retrieval finds a complete list."
+
+  # ── Multi-hop: require combining two documents ──────────────────────────────────
+  - id: q05
+    type: multi_hop
+    question: "The current setup uses a 384-dimensional local embedding model. If embeddings were migrated to Azure AI Foundry's text-embedding-3-large, what embedding dimension would the system switch to, and what new trade-offs would that introduce?"
+    match: all
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+      - AZURE_EMBEDDING_MIGRATION_GUIDE.md
+    expected_answer: "From 384 dims (local all-MiniLM-L6-v2) to 3072 dims (text-embedding-3-large). New trade-offs: pay-per-token pricing, dependence on an internet connection, and API rate limits."
+    notes: "True multi-hop — current dims live in the local-embedding/architecture docs; the migration target (3072) only in the Azure Foundry guide. match:all so partial retrieval scores as partial."
+
+  - id: q06
+    type: multi_hop
+    question: "Compared with Azure Cognitive Search, what advantages does the ChromaDB + local-embeddings approach claim in cost, latency, and offline capability?"
+    match: any
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    expected_answer: "Cost: free after setup vs Azure's pay-per-use. Latency: ~50ms local vs ~200ms (network-dependent) for Azure. Offline: ChromaDB is fully offline-capable, Azure requires internet. (Trade-off: Azure scales to 1M+ docs and is fully managed.)"
+    notes: "The Azure-vs-Chroma comparison table is self-contained in 02-Architecture; the legacy Azure docs are distractors here."
+
+  # ── Single-doc factual, distractor-sensitive & engineering depth ────────────────
+  - id: q07
+    type: factual
+    question: "What vector-index algorithm and similarity metric does ChromaDB use for semantic search in this system?"
+    match: any
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    expected_answer: "HNSW indexing with cosine similarity."
+    notes: "Distractor-sensitive: the legacy Azure architecture doc also discusses vector search and may be retrieved instead."
+
+  - id: q08
+    type: factual
+    question: "How does the system derive metadata keywords for a document from the folder structure and file contents?"
+    match: any
+    expected_sources:
+      - EXTRACTING_FILE_METADATA.md
+    expected_answer: "A child directory's name becomes a context keyword applied to every file beneath it (including nested subdirectories); additionally, text formatted as headings in markdown/text files is extracted as keywords."
+    notes: "Targets a small, otherwise low-traffic doc to keep coverage spread out."
+
+  - id: q09
+    type: factual
+    question: "What memory-management technique keeps the document-processing pipeline at roughly constant (O(1)) memory regardless of corpus size, and name one current limitation of that pipeline."
+    match: any
+    expected_sources:
+      - DOCUMENT_UPLOAD_ANALYSIS.md
+    expected_answer: "A generator pattern (yielding one search object at a time instead of building the full list) keeps memory ~constant. A current limitation: no automatic retry for failed uploads (also no error categorization or backpressure/rate-limit handling)."
+    notes: "Two-part single-doc question; tests whether retrieval + synthesis hold across a longer answer."
+
+  # ── Abstention: answer is NOT in the corpus (catch hallucination) ───────────────
+  - id: q10
+    type: abstention
+    question: "How do I configure the system to use Groq to generate the document embeddings?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The corpus documents local Sentence Transformers, OpenAI, and Azure OpenAI embedding providers, but nothing about Groq embeddings."
+    notes: "Topical-but-absent. Tempting to fabricate config because adjacent provider docs exist."
+
+  - id: q11
+    type: abstention
+    question: "Which reranking model does the pipeline use to reorder vector-search results before returning them?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The system uses vector (semantic) search plus metadata filtering; no reranking model is described anywhere in the corpus."
+    notes: "Probes a false premise — the system has no reranker. A naive RAG will happily invent one."
+
+  - id: q12
+    type: abstention
+    question: "What is the exact monthly dollar cost of the Azure Cognitive Search tier this project was billed for?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The corpus describes Azure Cognitive Search as 'pay-per-use' but gives no specific dollar figure."
+    notes: "The corpus discusses cost qualitatively; a specific number is unsupported and must be refused."

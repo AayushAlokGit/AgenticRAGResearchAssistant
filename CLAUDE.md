@@ -22,6 +22,12 @@ Concretely, this changes how you should work here:
   implementing it. Name the trade-off being made. If there's a standard term for what
   we're doing (HyDE, reranking, parent/child chunking, context compaction), use it and
   define it.
+- **Teach the general principle, not the project-specific trick.** The user is here to
+  learn transferable craft, not facts overfit to this build. Lead with the *general*
+  idea, name what's universal vs what's the domain-specific "skin/dialect," and where
+  it helps give a non-RAG example to prove it transfers — then map it back to this
+  project as one worked instance. Teaching docs should be general-first with a "how to
+  apply this to a new system" angle (see `evals/EVALUATION_PRINCIPLES.md` as the model).
 - **Prefer hand-rolled over framework magic.** The user is deliberately building the
   agent loop, context assembly, and harness by hand *before* reaching for LangGraph or
   similar, to understand what those frameworks abstract. Do not introduce a heavy
@@ -60,12 +66,14 @@ Five modules (see `ProjectIdea.md` for detail), built in order:
 
 - **Design decisions** are tracked in `DESIGN_DECISIONS.md` — one short line each, newest
   first. When a real architectural fork is resolved, add a one-liner there. Keep it terse.
-- **LLM layer:** **Gemini-only for now** — `gemini-2.5-flash` for agent/judge — because
-  it's the only provider key currently available (DD-003). Embeddings are kept **local**
-  (`all-MiniLM-L6-v2`) to preserve Gemini quota during repeated re-indexing. The
-  provider-fallback router remains a learning goal: the layer is built *router-shaped but
-  single-tier* now (provider_order is a list), and expanded to more tiers once additional
-  keys exist and the naive loop + evals can prove the router doesn't degrade quality.
+- **LLM layer:** **Groq-only for now** — `llama-3.3-70b-versatile` for agent/judge — the
+  available provider key; Groq's LPU inference is fast, which suits the eval loop (DD-004).
+  Embeddings are kept **local** (`all-MiniLM-L6-v2`) — and **must** be, because Groq has no
+  embeddings endpoint (text-gen + Whisper only); local is also the lightweight choice for
+  limited hardware. The provider-fallback router remains a learning goal: the layer is
+  built *router-shaped but single-tier* now (provider_order is a list), and expanded to
+  more tiers once additional keys exist and the naive loop + evals can prove the router
+  doesn't degrade quality.
 - **Versioning:** keep prompts, configs, and corpus versioned so single changes can be
   A/B tested against the eval set.
 

@@ -5,23 +5,23 @@
 # is versioned so eval runs are reproducible and single changes can be A/B tested.
 
 llm:
-  # Gemini-only for now (the only provider key currently available) — see DD-003.
-  # Still kept router-shaped: provider_order is a list so adding tiers later is a
-  # one-line change, no code rewrite.
-  provider_order: [gemini] # later, when more keys exist: [anthropic, gemini, ollama]
+  # Groq-only for now (the available provider key) — see DD-004. Groq is LPU-based and
+  # very fast, which suits the change->measure->re-run-evals loop. Still kept
+  # router-shaped: provider_order is a list so adding tiers later is a one-line change.
+  provider_order: [groq] # later, when more keys exist: [groq, anthropic, ollama]
   models:
-    gemini: gemini-2.5-flash # agent loop / judge
+    groq: llama-3.3-70b-versatile # agent loop / judge
     anthropic: claude-sonnet-4-6 # reference only; unused until an Anthropic key exists
     ollama: llama3.1 # reference only; unused until Ollama is set up
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
 
 embedding:
-  # Local + free + offline; needs NO API key, so it preserves the limited Gemini quota
-  # for agent reasoning during repeated re-indexing (DD-003). To go full-Gemini instead,
-  # swap to the gemini line below (and confirm the exact model id against your access).
+  # Local + free + offline; needs NO API key. NOTE: Groq has no embeddings endpoint
+  # (text-gen + Whisper only), so embeddings CANNOT be Groq — local is the natural fit
+  # and is the lightweight choice for limited hardware (22M params, ~80MB, CPU-only).
+  # See DD-004. A stronger embedder (bge/gte/hosted) is a later, eval-gated change.
   model: sentence-transformers/all-MiniLM-L6-v2 # local, CPU-friendly baseline
-  # model: gemini-embedding-001  # Gemini embeddings (consumes API quota)
 
 retrieval:
   chunk_size: 800 # characters; naive fixed-size chunking to start
