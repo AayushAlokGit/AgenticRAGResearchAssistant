@@ -54,8 +54,7 @@ questions (MiniLM, 800/100 char chunks):
 | mode | recall@1 | recall@3 | recall@5 | MRR |
 |------|----------|----------|----------|-----|
 | dense (v2 baseline) | 0.621 | 0.759 | 0.862 | 0.843 |
-| **hybrid (current, DD-009)** | **0.759** | **0.862** | 0.862 | **0.931** |
+| **hybrid (current, DD-009)** | **0.724** | **0.793** | **0.897** | **0.903** |
 
-Hybrid (dense + BM25 + RRF) won the A/B and is now the default. Remaining failures to
-tune against next (reranking): q05, q25 (slipped out of top-5 under hybrid), and
-multi-hop q26/q29. Answer-quality + cost layers not built yet.
+Hybrid (dense + BM25 via rank_bm25 + RRF) won the A/B and is now the default. Remaining
+@5 misses to tune against next (reranking): q05, q25, q29. Answer-quality + cost layers not built yet.

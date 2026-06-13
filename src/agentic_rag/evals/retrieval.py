@@ -177,7 +177,7 @@ def run(save: bool = True, mode: Optional[str] = None) -> dict:
 # ───────────────────────────── printing + saving ─────────────────────────────
 
 def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
-    print(f"\n=== Retrieval Recall (mode={mode}, depth {max(K_VALUES)}) ===")
+    print(f"\n=== Retrieval Recall (mode={mode}, max chunks {max(K_VALUES)}) ===")
     print(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
 
     print(f"QUESTIONS ({len(results)})   rank = position of first expected-source chunk")

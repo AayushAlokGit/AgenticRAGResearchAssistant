@@ -1,12 +1,12 @@
-"""BM25 sparse (lexical) retrieval — hand-rolled.
+"""BM25 sparse (lexical) retrieval — via the ``rank_bm25`` library.
 
 BM25 ("Best Matching 25") is the classic keyword ranking function from information
 retrieval. Unlike dense embeddings, which match MEANING, BM25 matches exact TOKENS — so
 it shines on rare/specific terms (acronyms, model names, identifiers) that an embedder
-might blur. We hand-roll it (rather than pull in rank_bm25) because it's a foundational
-algorithm worth understanding, like the chunker and tracker we wrote by hand.
+might blur. We use the well-tested ``rank_bm25`` library rather than hand-rolling the
+formula; the comments below explain what it's doing internally so it isn't a black box.
 
-The score of a chunk d for a query q is a sum over the query's terms t:
+How ``rank_bm25``'s ``BM25Okapi`` scores a chunk d for a query q — a sum over query terms t:
 
     score(d, q) = Σ_t  IDF(t) · ( f(t,d) · (k1 + 1) )
                         ─────────────────────────────────────────────
@@ -15,24 +15,26 @@ The score of a chunk d for a query q is a sum over the query's terms t:
 where
     f(t,d)  = how many times term t appears in chunk d (term frequency)
     IDF(t)  = inverse document frequency — rarer terms across the corpus weigh more
-    |d|     = length of chunk d in tokens
-    avgdl   = average chunk length
-    k1, b   = tuning knobs: k1 controls term-frequency saturation (~1.5),
-              b controls length normalization (0..1, ~0.75).
+    |d|     = length of chunk d in tokens, avgdl = average chunk length
+    k1=1.5  = term-frequency saturation (the 10th occurrence adds less than the 1st)
+    b=0.75  = length normalization (a long chunk can't score high just by being long)
 
-Two intuitions baked into the formula:
-  - IDF: a term in every chunk (e.g. "the") tells you nothing; a rare term is informative.
-  - Saturation + length-norm: the 10th occurrence of a word adds less than the 1st, and a
-    long chunk isn't allowed to score high just by being long.
+Two library-specific internals worth knowing:
+  - BM25Okapi's IDF can go NEGATIVE for terms that appear in more than half the corpus.
+    rank_bm25 floors those at ``epsilon · average_idf`` (epsilon=0.25 by default) so very
+    common words don't actively subtract from a chunk's score.
+  - The index precomputes all term/document frequencies, IDFs, and avgdl up front in the
+    constructor, so each ``get_scores`` call is just a fast scoring pass over the corpus.
 
-Naive on purpose: tokenization is lowercase + split on non-alphanumeric, with no stemming
-or stopword removal (those are later, eval-gated upgrades).
+Tokenization is ours (lowercase, split on non-alphanumeric); rank_bm25 takes pre-tokenized
+input. No stemming / stopword removal yet — those are later, eval-gated upgrades.
 """
 from __future__ import annotations
 
-import math
 import re
 from typing import List
+
+from rank_bm25 import BM25Okapi
 
 from agentic_rag.rag.vector_store import Hit
 
@@ -43,73 +45,30 @@ def tokenize(text: str) -> List[str]:
 
 
 class BM25Index:
-    def __init__(self, chunks: List[dict], k1: float = 1.5, b: float = 0.75):
+    def __init__(self, chunks: List[dict]):
         # chunks: list of {source, chunk_index, text}
         self.chunks = chunks
-        self.k1 = k1
-        self.b = b
 
-        # Tokenize every chunk once, and record its length in tokens.
-        self.doc_tokens = []
-        self.doc_length = []
+        tokenized_corpus = []
         for chunk in chunks:
-            tokens = tokenize(chunk["text"])
-            self.doc_tokens.append(tokens)
-            self.doc_length.append(len(tokens))
+            tokenized_corpus.append(tokenize(chunk["text"]))
 
-        self.num_docs = len(chunks)
-        if self.num_docs > 0:
-            self.avg_length = sum(self.doc_length) / self.num_docs
-        else:
-            self.avg_length = 0.0
-
-        # Term frequency per chunk: {term: count}.
-        self.term_freqs = []
-        for tokens in self.doc_tokens:
-            counts = {}
-            for token in tokens:
-                counts[token] = counts.get(token, 0) + 1
-            self.term_freqs.append(counts)
-
-        # Document frequency: in how many chunks does each term appear at least once.
-        self.doc_freq = {}
-        for counts in self.term_freqs:
-            for term in counts:
-                self.doc_freq[term] = self.doc_freq.get(term, 0) + 1
-
-    def idf(self, term: str) -> float:
-        """Inverse document frequency with the standard BM25 smoothing (+0.5), and a +1
-        inside the log so the value stays non-negative even for very common terms."""
-        n_with_term = self.doc_freq.get(term, 0)
-        return math.log((self.num_docs - n_with_term + 0.5) / (n_with_term + 0.5) + 1.0)
+        # Building the index here precomputes term/doc frequencies, IDFs and avgdl, so
+        # every later query is just a scoring pass. Uses BM25Okapi defaults (k1=1.5, b=0.75).
+        self.bm25 = BM25Okapi(tokenized_corpus)
 
     def query(self, text: str, k: int) -> List[Hit]:
-        query_terms = tokenize(text)
+        query_tokens = tokenize(text)
 
-        # Precompute IDF once per DISTINCT query term (iterating unique terms also avoids
-        # double-counting a term that appears twice in the question).
-        idf_by_term = {}
-        for term in set(query_terms):
-            idf_by_term[term] = self.idf(term)
+        # get_scores returns one BM25 score per chunk, aligned to the corpus order we
+        # passed in (index i here == self.chunks[i]).
+        scores = self.bm25.get_scores(query_tokens)
 
-        # Score every chunk against the query.
+        # Keep only chunks the query actually touched, then take the top k.
         scored = []
-        for i in range(self.num_docs):
-            term_freq = self.term_freqs[i]
-            length = self.doc_length[i]
-
-            score = 0.0
-            for term in idf_by_term:
-                if term not in term_freq:
-                    continue
-                f = term_freq[term]
-                numerator = f * (self.k1 + 1)
-                denominator = f + self.k1 * (1 - self.b + self.b * length / self.avg_length)
-                score += idf_by_term[term] * numerator / denominator
-
-            if score > 0.0:
-                scored.append((i, score))
-
+        for i in range(len(scores)):
+            if scores[i] > 0.0:
+                scored.append((i, float(scores[i])))
         scored.sort(key=lambda pair: pair[1], reverse=True)
 
         hits = []

@@ -27,7 +27,7 @@ retrieval:
   chunk_size: 800 # characters; naive fixed-size chunking to start
   chunk_overlap: 100
   top_k: 5 # chunks returned per query
-  mode: hybrid # dense | hybrid — hybrid won the A/B (recall@1 +0.14, MRR +0.09), now default (DD-009)
+  mode: hybrid # dense | hybrid — hybrid won the A/B (recall@1 +0.10, MRR +0.06), now default (DD-009)
   hybrid:
     # Hybrid = dense (vector) + BM25 (keyword), fused by Reciprocal Rank Fusion.
     rrf_k: 60 # RRF damping constant (standard default)

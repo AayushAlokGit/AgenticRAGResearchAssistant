@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0",                  # read the versioned YAML config + eval datasets
     "sentence-transformers>=2.2",   # local embeddings (all-MiniLM-L6-v2); pulls torch
     "chromadb>=0.5",                # persistent vector store for the naive baseline
+    "rank-bm25>=0.2",               # BM25 sparse retrieval for hybrid search
 ]
 
 [tool.setuptools.packages.find]
