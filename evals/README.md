@@ -32,14 +32,21 @@ most people forget these, and they are gold.
 
 ## Scoring, added in layers
 
-1. **Retrieval** (now): recall@k via `expected_sources` membership. Cheap, no LLM.
+1. **Retrieval** (built): recall@k via `expected_sources` membership + MRR. Cheap, no LLM.
+   Code: `src/agentic_rag/evals/retrieval.py` — run `python -m agentic_rag.evals.retrieval`.
 2. **Answer quality** (later): faithfulness / groundedness + answer relevance via
    LLM-as-judge, then Ragas.
 3. **System cost** (later): step count, tokens, latency per question.
 
+We report recall at **several** cutoffs (@1/@3/@5) plus **MRR**, not a single recall@5,
+because recall@5 over an 11-doc corpus saturates at 1.0 — a metric pinned at the ceiling
+can't show improvement, only regressions. The stricter cutoffs and ranking-sensitive MRR
+are what discriminate. Each run writes a JSON to `eval_runs/` (gitignored) for diffing.
+
 Run the set before/after every meaningful change and keep the score deltas. The
 change -> measure -> keep-or-revert loop is the real skill this project is practicing.
 
-Status: **`datasets/seed.yaml` v1 exists (12 questions: 9 answerable + 3 abstention) over
-the frozen 11-doc corpus snapshot. The scoring harness that runs it is not built yet** —
-the dataset is the ground truth that harness will consume.
+Status: **`datasets/seed.yaml` v1 (12 questions: 9 answerable + 3 abstention) over the
+frozen 11-doc corpus, and the retrieval scorer, both exist.** Naive baseline (MiniLM,
+800/100 char chunks): **recall@1=0.667, @3=0.889, @5=1.000, MRR=0.889.** Hard case is q05
+(multi_hop, match:all). Answer-quality + cost layers not built yet.
