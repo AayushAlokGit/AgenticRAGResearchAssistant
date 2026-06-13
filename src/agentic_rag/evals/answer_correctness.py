@@ -37,7 +37,7 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -47,6 +47,7 @@ from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.llm.provider import build_llm
 from agentic_rag.rag.answer import generate_answer, load_prompt
 from agentic_rag.rag.retriever import build_retriever
+from agentic_rag.rag.vector_store import Hit
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class QAResult:
     abstained: bool
     verdict: Optional[str]      # CORRECT/PARTIALLY_CORRECT/INCORRECT, or None if not judged
     judge_reason: str = ""
+    retrieved: List[Hit] = field(default_factory=list)   # chunks fed to the generator, for diagnosis
 
 
 def is_abstention(answer: str) -> bool:
@@ -135,7 +137,7 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
         if not q.should_abstain and not abstained:
             verdict, reason = judge_correctness(llm, judge_prompt, q.question, q.expected_answer, generated.answer)
 
-        result = QAResult(q, generated.answer, abstained, verdict, reason)
+        result = QAResult(q, generated.answer, abstained, verdict, reason, generated.retrieved)
         results.append(result)
         logger.info(f"  [{i:2d}/{len(questions)}] {q.id} {q.type:<10} {describe(result)}")
 
@@ -218,6 +220,18 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
 
     per_question = []
     for r in results:
+        # Record the retrieved chunks (source + text) so a run can be diagnosed offline:
+        # for a failure, read the actual passages the generator saw and decide whether the
+        # needed fact was even present (retrieval problem) or was present but the answer
+        # dropped it (generation problem).
+        retrieved = []
+        for hit in r.retrieved:
+            retrieved.append({
+                "source": hit.source,
+                "chunk_index": hit.chunk_index,
+                "score": round(hit.score, 4),
+                "text": hit.text,
+            })
         per_question.append({
             "id": r.q.id,
             "type": r.q.type,
@@ -225,7 +239,10 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
             "abstained": r.abstained,
             "verdict": r.verdict,
             "answer": r.answer,
+            "expected_answer": r.q.expected_answer,
+            "expected_sources": r.q.expected_sources,
             "judge_reason": r.judge_reason,
+            "retrieved": retrieved,
         })
 
     record = {
