@@ -8,7 +8,13 @@
 #
 # Ground truth was written by reading the cited documents — every `expected_sources`
 # entry has been verified to actually contain the answer. Do not add a source you have
-# not read.
+# not read. All 32 expected_answers were independently re-verified against the corpus
+# (2026-06-13) before being used as answer-quality-judge ground truth.
+#
+# Corpus self-contradictions to AVOID as ground truth for FUTURE questions:
+#   - tool count (4 vs 5): 01-Architecture contradicts itself — pin the source carefully.
+#   - PROJECT_README mixes cloud/Azure AND 100%-local: unreliable for embedding provider/dims.
+#   - CHROMADB_DATA_VIEWING_GUIDE shows two different document counts (21 vs 17).
 #
 # ── Schema (per question) ───────────────────────────────────────────────────────────
 #   id                : stable handle (q01…), so score deltas are trackable across runs.

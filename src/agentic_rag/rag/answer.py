@@ -55,29 +55,37 @@ def assemble_context(hits: List[Hit]) -> str:
     return "\n\n".join(passages)
 
 
-def answer_question(question: str, config: Optional[dict] = None) -> AnswerResult:
-    if config is None:
-        config = load_config()
+def generate_answer(question: str, retriever, llm, system_prompt: str, top_k: int) -> AnswerResult:
+    """Core generation given PREBUILT dependencies.
 
-    # 1. Retrieve (hybrid, by default) the top_k chunks for the question.
-    retriever = build_retriever(config)
-    top_k = config["retrieval"]["top_k"]
+    Split out so a caller answering many questions (e.g. the answer-quality eval) can build
+    the retriever + LLM once and reuse them, instead of reloading the embedder per question.
+    """
+    # 1. Retrieve the top_k chunks.
     hits = retriever.query(question, top_k)
 
     # 2. Assemble the two-message prompt: versioned instructions as the system message,
     #    and the dynamic context + question wrapped in code as the user message.
-    system_prompt = load_prompt(config, "answer_with_citations")
     context = assemble_context(hits)
     user_message = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
 
-    # 3. Generate the answer.
-    llm = build_llm(config)
+    # 3. Generate.
     answer = llm.complete([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ])
-
     return AnswerResult(question=question, answer=answer, retrieved=hits)
+
+
+def answer_question(question: str, config: Optional[dict] = None) -> AnswerResult:
+    """Convenience one-shot: build everything from config and answer a single question."""
+    if config is None:
+        config = load_config()
+    retriever = build_retriever(config)
+    llm = build_llm(config)
+    system_prompt = load_prompt(config, "answer_with_citations")
+    top_k = config["retrieval"]["top_k"]
+    return generate_answer(question, retriever, llm, system_prompt, top_k)
 
 
 def main() -> None:

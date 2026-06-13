@@ -34,8 +34,10 @@ most people forget these, and they are gold.
 
 1. **Retrieval** (built): recall@k via `expected_sources` membership + MRR. Cheap, no LLM.
    Code: `src/agentic_rag/evals/retrieval.py` — run `python -m agentic_rag.evals.retrieval`.
-2. **Answer quality** (later): faithfulness / groundedness + answer relevance via
-   LLM-as-judge, then Ragas.
+2. **Answer quality** (built): deterministic abstention check + LLM-as-judge correctness
+   vs the verified `expected_answer`. Code: `src/agentic_rag/evals/answer_quality.py` —
+   run `python -m agentic_rag.evals.answer_quality`. Baseline: end-to-end 19/29=0.655,
+   abstention 3/3. (Faithfulness/groundedness judge + Ragas still to come.)
 3. **System cost** (later): step count, tokens, latency per question.
 
 We report recall at **several** cutoffs (@1/@3/@5) plus **MRR**, not a single recall@5,
