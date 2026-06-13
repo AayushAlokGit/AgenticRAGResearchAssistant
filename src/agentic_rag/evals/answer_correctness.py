@@ -19,8 +19,10 @@ Two signals per question:
      returns CORRECT / PARTIALLY_CORRECT / INCORRECT.
 
 Honest caveats:
-  - The judge is the SAME Groq model that generates the answers (self-evaluation bias).
-    Acceptable for a baseline; a stronger/different judge model is a later upgrade.
+  - By default the generator and judge are DIFFERENT models (DD-013: 70b generator,
+    gpt-oss-120b judge) — a different-family judge avoids self-evaluation bias and runs on
+    its own Groq daily-token bucket. If config points both roles at the same model, the
+    self-eval-bias caveat returns (the report() note flags which case you're in).
   - Generation and judging are non-deterministic (even at temperature 0), so this metric
     has run-to-run variance — unlike the deterministic retrieval recall. Treat small
     deltas as noise; look for clear movement.
@@ -44,7 +46,7 @@ from agentic_rag.config import load_config
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
 from agentic_rag.evals.runs import eval_run_path
 from agentic_rag.logging_setup import configure_run_logging
-from agentic_rag.llm.provider import build_llm
+from agentic_rag.llm.provider import build_llm, role_model
 from agentic_rag.rag.answer import generate_answer, load_prompt
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
@@ -115,9 +117,12 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
     config = load_config()
 
     # Build everything ONCE and reuse across questions (the embedder/store/bm25 are
-    # expensive to construct; the LLM is reused for both generation and judging).
+    # expensive to construct). Generator and judge are SEPARATE LLMs (different models —
+    # DD-013): separate Groq daily-token buckets + a different-family judge with no self-
+    # eval bias. They fall back to the same default model if no role override is set.
     retriever = build_retriever(config)
-    llm = build_llm(config)
+    generator_llm = build_llm(config, role="generator")
+    judge_llm = build_llm(config, role="judge")
     system_prompt = load_prompt(config, "answer_with_citations")
     judge_prompt = load_prompt(config, "judge_correctness")
     top_k = config["retrieval"]["top_k"]
@@ -129,13 +134,13 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
     logger.info(f"Scoring {len(questions)} questions (generate + judge LLM calls)...\n")
     results = []
     for i, q in enumerate(questions, start=1):
-        generated = generate_answer(q.question, retriever, llm, system_prompt, top_k)
+        generated = generate_answer(q.question, retriever, generator_llm, system_prompt, top_k)
         abstained = is_abstention(generated.answer)
 
         verdict = None
         reason = ""
         if not q.should_abstain and not abstained:
-            verdict, reason = judge_correctness(llm, judge_prompt, q.question, q.expected_answer, generated.answer)
+            verdict, reason = judge_correctness(judge_llm, judge_prompt, q.question, q.expected_answer, generated.answer)
 
         result = QAResult(q, generated.answer, abstained, verdict, reason, generated.retrieved)
         results.append(result)
@@ -166,9 +171,14 @@ def report(results: List[QAResult], config: dict) -> dict:
     # Abstention breakdown.
     abstained_correctly = [r for r in abstention if r.abstained]
 
-    model = config["llm"]["models"]["groq"]
-    logger.info(f"\n=== Answer Correctness (generator = judge = {model}) ===")
-    logger.info("note: same model generates and grades (self-eval bias); LLM output is non-deterministic\n")
+    generator_model = role_model(config, "generator")
+    judge_model = role_model(config, "judge")
+    same_model = generator_model == judge_model
+    logger.info(f"\n=== Answer Correctness (generator={generator_model}, judge={judge_model}) ===")
+    if same_model:
+        logger.info("note: same model generates and grades (self-eval bias); LLM output is non-deterministic\n")
+    else:
+        logger.info("note: judge is a different model (no self-eval bias); LLM output is non-deterministic\n")
 
     # List the failures explicitly — that's what you act on.
     logger.info("FAILURES:")
@@ -200,7 +210,8 @@ def report(results: List[QAResult], config: dict) -> dict:
     logger.info(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
 
     return {
-        "model": model,
+        "generator_model": generator_model,
+        "judge_model": judge_model,
         "answerable": n_answerable,
         "answered": len(answered),
         "false_abstention": len(false_abstentions),

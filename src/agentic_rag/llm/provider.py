@@ -85,8 +85,27 @@ class LLMRouter:
         raise LLMError("All LLM providers failed: " + " | ".join(errors))
 
 
-def build_llm(config: dict) -> LLMRouter:
-    """Construct the router from config, reading API keys from the environment (.env)."""
+def role_model(config: dict, role: str | None = None) -> str:
+    """Model name for a role, falling back to the active provider's default model.
+
+    Roles (e.g. "generator", "judge") let one config run different parts of the system on
+    different models — which on Groq means separate daily-token buckets and, for a judge, a
+    different model family (no self-eval bias). A role with no override uses the default.
+    """
+    llm_cfg = config["llm"]
+    roles = llm_cfg.get("roles", {})
+    if role and roles.get(role):
+        return roles[role]
+    default_provider = llm_cfg["provider_order"][0]
+    return llm_cfg["models"][default_provider]
+
+
+def build_llm(config: dict, role: str | None = None) -> LLMRouter:
+    """Construct the router from config, reading API keys from the environment (.env).
+
+    Pass ``role`` (e.g. "generator" or "judge") to use that role's model override from
+    ``llm.roles``; omit it for the provider's default model.
+    """
     # Load .env so GROQ_API_KEY is available even when not exported in the shell.
     from dotenv import load_dotenv
 
@@ -97,6 +116,7 @@ def build_llm(config: dict) -> LLMRouter:
     max_tokens = llm_cfg["max_tokens"]
     max_retries = llm_cfg.get("max_retries", 5)
     timeout = llm_cfg.get("timeout", 30.0)
+    model = role_model(config, role)
 
     providers = []
     for provider_name in llm_cfg["provider_order"]:
@@ -104,7 +124,6 @@ def build_llm(config: dict) -> LLMRouter:
             api_key = os.getenv("GROQ_API_KEY")
             if not api_key:
                 continue  # no key → skip this tier (router-shaped: other tiers can still run)
-            model = llm_cfg["models"]["groq"]
             providers.append(GroqProvider(model, api_key, temperature, max_tokens, max_retries, timeout))
         else:
             # Other providers (anthropic, ollama) aren't wired yet — no keys exist. They're

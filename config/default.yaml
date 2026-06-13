@@ -10,9 +10,20 @@ llm:
   # router-shaped: provider_order is a list so adding tiers later is a one-line change.
   provider_order: [groq] # later, when more keys exist: [groq, anthropic, ollama]
   models:
-    groq: llama-3.3-70b-versatile # agent loop / judge
+    groq: llama-3.3-70b-versatile # default model for the active provider (the generator)
     anthropic: claude-sonnet-4-6 # reference only; unused until an Anthropic key exists
     ollama: llama3.1 # reference only; unused until Ollama is set up
+  # Per-role model overrides (DD-013). A role with no entry falls back to models.<provider>.
+  # WHY split generator and judge onto different models:
+  #   1. Separate daily-token buckets — Groq meters TPD per-model, so the judge runs on its
+  #      OWN 200K/day quota (gpt-oss-120b) instead of eating the generator's 100K (70b).
+  #      Net: ~2x answer-correctness runs/day before hitting a wall.
+  #   2. Removes self-evaluation bias — a judge from a DIFFERENT model family can't rubber-
+  #      stamp its own generations (the caveat we documented for the single-model setup).
+  # gpt-oss-120b is a strong, different-family judge with the higher daily ceiling.
+  roles:
+    generator: llama-3.3-70b-versatile # where the answer is born — keep the strong model
+    judge: openai/gpt-oss-120b # different family + own 200K TPD bucket
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   # The Groq SDK retries 429/5xx/timeout/connection errors with exponential backoff +
