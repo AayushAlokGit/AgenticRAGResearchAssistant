@@ -73,8 +73,9 @@ class QAResult:
     verdict: Optional[str]      # CORRECT/PARTIALLY_CORRECT/INCORRECT, or None if not judged
     judge_reason: str = ""
     retrieved: List[Hit] = field(default_factory=list)   # chunks fed to the generator, for diagnosis
-    gen_usage: Usage = field(default_factory=Usage)      # generator token cost (the system cost)
-    judge_usage: Usage = field(default_factory=Usage)    # judge token cost (the instrument cost)
+    controller_usage: Usage = field(default_factory=Usage)  # agent routing cost (system cost)
+    generator_usage: Usage = field(default_factory=Usage)   # final-answer cost (system cost)
+    judge_usage: Usage = field(default_factory=Usage)       # judge token cost (instrument cost)
 
 
 def is_abstention(answer: str) -> bool:
@@ -159,9 +160,10 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] =
     # eval bias. They fall back to the same default model if no role override is set.
     retriever = build_retriever(config)
     generator_llm = build_llm(config, role="generator")
+    controller_llm = build_llm(config, role="controller")  # agent routing brain (DD-025 tiering)
     judge_llm = build_llm(config, role="judge")
     # The answerer is the naive-vs-agentic switch (config agent.enabled). Built once, reused.
-    answerer = build_answerer(config, retriever, generator_llm)
+    answerer = build_answerer(config, retriever, generator_llm, controller_llm=controller_llm)
     judge_prompt = load_prompt(config, "judge_correctness")
 
     logger.info(f"eval dataset version: v{version}")
@@ -189,7 +191,8 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] =
             verdict, reason, judge_usage = judge_correctness(judge_llm, judge_prompt, q.question, q.expected_answer, generated.answer)
 
         result = QAResult(q, generated.answer, abstained, verdict, reason, generated.retrieved,
-                          gen_usage=generated.usage, judge_usage=judge_usage)
+                          controller_usage=generated.controller_usage,
+                          generator_usage=generated.generator_usage, judge_usage=judge_usage)
         results.append(result)
         logger.info(f"  [{i:2d}/{len(questions)}] {q.id} {q.type:<10} {describe(result)}")
 
@@ -268,15 +271,19 @@ def report(results: List[QAResult], config: dict) -> dict:
     logger.info(f"    end-to-end success (answered AND correct): {len(correct)}/{n_graded} = {end_to_end:.3f}   [excludes {len(ungraded)} ungraded]")
     logger.info(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
 
-    # Cost axis (kept separate from quality): generator = system cost, judge = instrument cost.
+    # Cost axis (kept separate from quality): controller + generator = system cost (split by
+    # role since they may be different models, DD-025); judge = instrument cost.
+    ctrl_total = Usage()
     gen_total = Usage()
     judge_total = Usage()
     for r in results:
-        gen_total = gen_total + r.gen_usage
+        ctrl_total = ctrl_total + r.controller_usage
+        gen_total = gen_total + r.generator_usage
         judge_total = judge_total + r.judge_usage
     n = len(results) or 1
-    logger.info(f"  cost (tokens): generator {gen_total.total_tokens} in {gen_total.calls} call(s) "
-                f"(~{gen_total.calls / n:.1f} calls/Q) | judge {judge_total.total_tokens} [instrument]")
+    logger.info(f"  cost (tokens): controller {ctrl_total.total_tokens} in {ctrl_total.calls} call(s) "
+                f"(~{ctrl_total.calls / n:.1f}/Q) | generator {gen_total.total_tokens} in {gen_total.calls} call(s) "
+                f"| judge {judge_total.total_tokens} [instrument]")
 
     return {
         "generator_model": generator_model,
@@ -299,11 +306,13 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
     """Write a run record to eval_runs/answer_correctness/v<version>/<timestamp>.json (gitignored)."""
     path = eval_run_path("answer_correctness", version)
 
+    ctrl_total = Usage()
     gen_total = Usage()
     judge_total = Usage()
     per_question = []
     for r in results:
-        gen_total = gen_total + r.gen_usage
+        ctrl_total = ctrl_total + r.controller_usage
+        gen_total = gen_total + r.generator_usage
         judge_total = judge_total + r.judge_usage
         # Record the retrieved chunks (source + text) so a run can be diagnosed offline:
         # for a failure, read the actual passages the generator saw and decide whether the
@@ -327,7 +336,7 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
             "expected_answer": r.q.expected_answer,
             "expected_sources": r.q.expected_sources,
             "judge_reason": r.judge_reason,
-            "usage": usage_record(r.gen_usage, r.judge_usage),
+            "usage": usage_record(r.controller_usage, r.generator_usage, r.judge_usage),
             "retrieved": retrieved,
         })
 
@@ -348,7 +357,7 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
         "metric": "answer_correctness",
         "config": run_config,
         "summary": summary,
-        "usage": usage_record(gen_total, judge_total),  # run-level token cost (system vs instrument)
+        "usage": usage_record(ctrl_total, gen_total, judge_total),  # run-level token cost by role
         "per_question": per_question,
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")

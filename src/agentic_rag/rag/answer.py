@@ -34,8 +34,11 @@ class AnswerResult:
     question: str
     answer: str
     retrieved: List[Hit]              # the chunks fed to the model, best-first
-    usage: Usage = field(default_factory=Usage)  # generator token cost to produce this answer
-                                                  # (agent loop: controller calls + final answer)
+    # Token cost split by ROLE so we can tier models (DD-025): the controller (routing) and
+    # the generator (final answer) may be different models with different prices, so summing
+    # them would hide which role the cost is in. Naive path has no controller -> stays zero.
+    controller_usage: Usage = field(default_factory=Usage)
+    generator_usage: Usage = field(default_factory=Usage)
 
 
 def load_prompt(config: dict, name: str) -> str:
@@ -77,7 +80,7 @@ def generate_answer(question: str, retriever, llm, system_prompt: str, top_k: in
         {"role": "user", "content": user_message},
     ])
     return AnswerResult(question=question, answer=completion.text or "",
-                        retrieved=hits, usage=completion.usage)
+                        retrieved=hits, generator_usage=completion.usage)
 
 
 def answer_question(question: str, config: Optional[dict] = None) -> AnswerResult:

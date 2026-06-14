@@ -13,18 +13,22 @@ from agentic_rag.config import resolve_path
 from agentic_rag.llm.provider import Usage
 
 
-def usage_record(generator: Usage, judge: Usage) -> dict:
-    """Shape per-run token usage for the eval JSON, kept in two SEPARATE buckets on purpose.
+def usage_record(controller: Usage, generator: Usage, judge: Usage) -> dict:
+    """Shape per-run token usage for the eval JSON, kept in SEPARATE buckets on purpose.
 
-    ``generator`` is SYSTEM cost — the tokens you'd actually pay for in production. ``judge``
-    is INSTRUMENT cost — the cost of *measuring*, which has no production counterpart (nobody
-    runs the judge when you ship). We deliberately do NOT sum them into one number: a combined
-    "tokens per run" would roughly double the apparent $/query and mislead the cost trade-off.
-    Tokens (not dollars) because a count is provider-neutral; dollars need a drifting price table.
+    ``controller`` + ``generator`` are SYSTEM cost — the tokens you'd actually pay in
+    production — but split by ROLE because they can be different models at different prices
+    (DD-025), and the controller is called many times/question while the generator runs once,
+    so summing them hides where the cost lives. ``judge`` is INSTRUMENT cost — the cost of
+    *measuring*, with no production counterpart (nobody runs the judge when you ship).
+    We deliberately do NOT collapse these: a single "tokens per run" would mislead every
+    cost trade-off. Tokens (not dollars) because a count is provider-neutral; dollars need a
+    drifting price table.
     """
     return {
-        "generator": generator.as_dict(),  # production cost
-        "judge": judge.as_dict(),          # measurement cost (no production counterpart)
+        "controller": controller.as_dict(),  # production cost — routing (called N times/Q)
+        "generator": generator.as_dict(),    # production cost — final answer (called once/Q)
+        "judge": judge.as_dict(),            # measurement cost (no production counterpart)
     }
 
 

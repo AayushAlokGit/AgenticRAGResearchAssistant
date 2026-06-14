@@ -177,8 +177,17 @@ def parse_action(raw: str) -> Optional[Decision]:
 # ───────────────────────────── the loop (parts 1, 3, 4) ─────────────────────────────
 
 def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: str,
-              top_k: int, max_rounds: int, answer_char_budget: int) -> AnswerResult:
-    """Run the retrieve -> reason -> retrieve loop, then answer from the gathered evidence."""
+              top_k: int, max_rounds: int, answer_char_budget: int,
+              controller_llm=None) -> AnswerResult:
+    """Run the retrieve -> reason -> retrieve loop, then answer from the gathered evidence.
+
+    `llm` writes the final answer (the generator); `controller_llm` makes the routing
+    decisions (search/finish). They may be DIFFERENT models — we tier compute by task
+    difficulty (DD-025): a cheap controller routing + an expensive generator synthesizing,
+    or vice-versa. Defaults to the same model for both (the champion) when not split.
+    """
+    if controller_llm is None:
+        controller_llm = llm
     logger.info("agent: START | budget<=%d round(s), top_k=%d, answer<=%d chars | Q: %s",
                 max_rounds, top_k, answer_char_budget, question)
     scratchpad: List[Hit] = []   # the evidence so far, deduped, best-effort ordered by arrival
@@ -192,7 +201,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         logger.info("agent: --- round %d/%d --- scratchpad=%d chunk(s)",
                     round_index + 1, max_rounds, len(scratchpad))
 
-        decision = decide_next_action(llm, react_prompt, question, scratchpad, steps, rounds_left)
+        decision = decide_next_action(controller_llm, react_prompt, question, scratchpad, steps, rounds_left)
         controller_usage = controller_usage + decision.usage
         logger.info("agent: think: %s", decision.thought or "(no thought given)")
 
@@ -237,13 +246,14 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         logger.info("agent: empty scratchpad — falling back to a single naive retrieval")
         result = generate_answer(question, retriever, llm, answer_prompt, top_k)
 
-    # Total generator cost of this question = all the controller reasoning calls + the final
-    # answer call. This is what makes "cost of agency" visible per question (naive=1 call).
-    result.usage = controller_usage + result.usage
+    # Attribute the controller (routing) cost to its own bucket; the generator bucket was set
+    # by the answer call above. Kept separate so a tiered run shows each role's cost (DD-025).
+    result.controller_usage = controller_usage
+    total_calls = result.controller_usage.calls + result.generator_usage.calls
+    total_tokens = result.controller_usage.total_tokens + result.generator_usage.total_tokens
     preview = result.answer.strip().replace("\n", " ")[:100]
     logger.info("agent: answer ready — %d char(s) from %d chunk(s), %d LLM call(s)/%d tokens: %s",
-                len(result.answer), len(result.retrieved), result.usage.calls,
-                result.usage.total_tokens, preview)
+                len(result.answer), len(result.retrieved), total_calls, total_tokens, preview)
     return result
 
 
@@ -295,7 +305,7 @@ def generate_from_scratchpad(question: str, scratchpad: List[Hit], llm, answer_p
         {"role": "user", "content": user_message},
     ])
     return AnswerResult(question=question, answer=completion.text or "",
-                        retrieved=scratchpad, usage=completion.usage)
+                        retrieved=scratchpad, generator_usage=completion.usage)
 
 
 # ───────────────────── the naive/agentic switch used by the evals ─────────────────────
@@ -310,23 +320,29 @@ class Answerer:
     clean one-variable comparison (naive baseline vs the agentic loop).
     """
     retriever: object
-    llm: object
+    llm: object              # the GENERATOR (writes the final answer)
     answer_prompt: str
     top_k: int
     agentic: bool
     react_prompt: str = ""
     max_rounds: int = 3
     answer_char_budget: int = 10000
+    controller_llm: object = None  # the agent's routing brain; defaults to llm (same model)
 
     def answer(self, question: str) -> AnswerResult:
         if self.agentic:
             return run_agent(question, self.retriever, self.llm, self.react_prompt,
-                             self.answer_prompt, self.top_k, self.max_rounds, self.answer_char_budget)
+                             self.answer_prompt, self.top_k, self.max_rounds,
+                             self.answer_char_budget, controller_llm=self.controller_llm)
         return generate_answer(question, self.retriever, self.llm, self.answer_prompt, self.top_k)
 
 
-def build_answerer(config: dict, retriever, llm) -> Answerer:
-    """Construct the Answerer from config; `agent.enabled` decides naive vs agentic."""
+def build_answerer(config: dict, retriever, llm, controller_llm=None) -> Answerer:
+    """Construct the Answerer from config; `agent.enabled` decides naive vs agentic.
+
+    `llm` is the generator. `controller_llm` (optional) is the routing model — pass a
+    separate one to tier the agent (DD-025); if None, the controller reuses the generator.
+    """
     answer_prompt = load_prompt(config, "answer_with_citations")
     top_k = config["retrieval"]["top_k"]
     agent_cfg = config.get("agent", {})
@@ -334,7 +350,8 @@ def build_answerer(config: dict, retriever, llm) -> Answerer:
     react_prompt = load_prompt(config, "agent_react") if agentic else ""
     max_rounds = agent_cfg.get("max_rounds", 3)
     answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
-    return Answerer(retriever, llm, answer_prompt, top_k, agentic, react_prompt, max_rounds, answer_char_budget)
+    return Answerer(retriever, llm, answer_prompt, top_k, agentic, react_prompt, max_rounds,
+                    answer_char_budget, controller_llm=controller_llm)
 
 
 # ───────────────────────────── manual single-question run ─────────────────────────────
@@ -358,6 +375,7 @@ def main() -> None:
     config = load_config()
     retriever = build_retriever(config)
     llm = build_llm(config, role="generator")
+    controller_llm = build_llm(config, role="controller")
     react_prompt = load_prompt(config, "agent_react")
     answer_prompt = load_prompt(config, "answer_with_citations")
     top_k = config["retrieval"]["top_k"]
@@ -366,7 +384,8 @@ def main() -> None:
     answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
 
     question = " ".join(args.question)
-    result = run_agent(question, retriever, llm, react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget)
+    result = run_agent(question, retriever, llm, react_prompt, answer_prompt, top_k, max_rounds,
+                       answer_char_budget, controller_llm=controller_llm)
 
     print(f"\nQ: {result.question}\n")
     print(f"A: {result.answer}\n")

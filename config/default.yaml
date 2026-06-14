@@ -8,10 +8,16 @@ llm:
     gemini: gemini-2.5-flash # default model per provider
     groq: llama-3.3-70b-versatile
   # Per-role provider+model (DD-013/DD-021). Form: {provider, model}, or a bare
-  # string = that model on the default provider. Split generator/judge to remove
-  # self-eval bias and give each role its own token bucket.
+  # string = that model on the default provider. Splitting roles removes self-eval
+  # bias (judge) and lets us tier compute by task difficulty (DD-025), each with its
+  # own token bucket.
   roles:
-    generator: {provider: gemini, model: gemini-2.5-flash-lite} # flash / pro are eval-gated upgrades
+    # controller = the agent's routing/decide-next-action brain (called N times/question).
+    # generator  = the final-answer writer (called once/question).
+    # Both flash-lite = the champion. The synthesis-failure audit (DD-024) motivates an A/B
+    # putting the GENERATOR on gemini-2.5-pro (one pro call/Q) — flip generator.model below.
+    controller: {provider: gemini, model: gemini-2.5-flash-lite}
+    generator: {provider: gemini, model: gemini-2.5-flash-lite} # A/B lever: -> gemini-2.5-pro
     judge: {provider: gemini, model: gemini-2.5-pro}
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
