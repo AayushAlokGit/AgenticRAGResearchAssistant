@@ -26,7 +26,11 @@ llm:
     generator: {provider: gemini, model: gemini-2.5-flash-lite} # cheapest/fastest; flash / pro are stronger upgrades (eval-gated)
     # generator: llama-3.1-8b-instant     # (Groq fallback options, bare-string = default provider)
     # generator: meta-llama/llama-4-scout-17b-16e-instruct
-    judge: {provider: groq, model: openai/gpt-oss-120b} # different family → no self-eval bias
+    # Judge on Gemini pro: a STRONGER model than the flash-lite generator. Same family, so some
+    # self-eval bias remains — but it CANCELS in an A/B (it hits both arms equally), and pro has
+    # the paid budget the Groq gpt-oss judge ran out of. For a clean ABSOLUTE faithfulness number,
+    # re-judge with a cross-family model (groq gpt-oss / qwen) when its bucket resets.
+    judge: {provider: gemini, model: gemini-2.5-pro}
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   # The Groq SDK retries 429/5xx/timeout/connection errors with exponential backoff +
@@ -68,10 +72,11 @@ retrieval:
 agent:
   # Module 2: when enabled, the answer path becomes a retrieve->reason->retrieve LOOP (the
   # model reformulates queries and decides when it has enough) instead of one fixed retrieval.
-  # OFF by default — the naive single-shot is the BASELINE we A/B against. Flip to true to
-  # measure the loop on the same 8b/20b anchor; it must beat correctness .775 / faithfulness
-  # .850 to earn its place (else revert, like recursive chunking did — EXPERIMENTS.md).
-  enabled: false
+  # ON by default — the loop WON its matched A/B (DD-022): vs the naive-Gemini anchor it took
+  # correctness .750->.800 and faithfulness .944->.975 and killed all 4 false-abstentions
+  # (both judged by gemini-2.5-pro, so judge bias cancels). Flip to false to recover the naive
+  # single-shot baseline for a re-A/B. Cost it bought: ~3-4x latency (multiple calls/question).
+  enabled: true
   max_rounds: 3 # hard budget: max search rounds before a forced answer (the circuit breaker)
   # Context compaction (a thin slice of Module 3): the final-answer prompt is trimmed to this
   # many characters of gathered evidence so it fits the model's per-request token ceiling.

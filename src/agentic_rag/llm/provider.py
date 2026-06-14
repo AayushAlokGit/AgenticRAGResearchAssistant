@@ -126,16 +126,18 @@ class GeminiProvider:
 
     def complete(self, messages: List[Message]) -> str:
         system_text, contents = _messages_to_gemini(messages)
+        # Gemini 2.5 models "think" by DEFAULT, and thinking tokens are drawn from
+        # max_output_tokens — so they can starve/truncate the visible output. flash/flash-lite
+        # let us disable thinking entirely (budget=0); gemini-2.5-pro cannot (nonzero minimum),
+        # so we CAP its thinking small enough to leave room for the answer/verdict within
+        # max_output_tokens. (Gemini keeps thinking out of response.text either way, so it never
+        # pollutes a judge's verdict — unlike Groq reasoning models.)
+        thinking_budget = 0 if "flash" in self.model else 512
         gen_config = self._types.GenerateContentConfig(
             system_instruction=system_text or None,
             temperature=self.temperature,
             max_output_tokens=self.max_tokens,
-            # Gemini 2.5 models "think" by DEFAULT, and those thinking tokens are drawn from
-            # max_output_tokens — so with our small cap the answer gets starved/truncated.
-            # Our generator just writes a cited answer from context (no CoT needed), so disable
-            # thinking: the whole budget goes to the visible answer. (budget=0 works on flash;
-            # gemini-2.5-pro has a non-zero minimum, so raise this if you switch to pro.)
-            thinking_config=self._types.ThinkingConfig(thinking_budget=0),
+            thinking_config=self._types.ThinkingConfig(thinking_budget=thinking_budget),
         )
         logger.debug("gemini completion: model=%s, %d message(s)", self.model, len(messages))
         start = time.perf_counter()

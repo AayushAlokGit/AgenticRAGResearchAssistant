@@ -25,6 +25,18 @@ def eval_run_path(metric: str, dataset_version: str) -> Path:
     return out_dir / f"{stamp}.json"
 
 
+def agent_config_snapshot(config: dict) -> dict:
+    """The agentic-loop knobs, embedded in answer-eval records so a run says whether the
+    agent loop was on (and its budget) — the difference between a naive and an agentic A/B.
+    """
+    agent = config.get("agent", {})
+    enabled = bool(agent.get("enabled", False))
+    return {
+        "enabled": enabled,
+        "max_rounds": agent.get("max_rounds") if enabled else None,
+    }
+
+
 def retrieval_config_snapshot(config: dict) -> dict:
     """The retrieval-relevant knobs, embedded in every run record so a run is self-describing.
 

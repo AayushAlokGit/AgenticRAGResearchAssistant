@@ -51,10 +51,11 @@ from typing import List, Optional
 from agentic_rag.config import load_config
 from agentic_rag.evals.answer_correctness import is_abstention, UNGRADED, JUDGE_MAX_ATTEMPTS
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset, eval_dataset_version
-from agentic_rag.evals.runs import eval_run_path, retrieval_config_snapshot
+from agentic_rag.evals.runs import agent_config_snapshot, eval_run_path, retrieval_config_snapshot
 from agentic_rag.logging_setup import configure_run_logging
+from agentic_rag.agent.loop import build_answerer
 from agentic_rag.llm.provider import build_llm, role_model
-from agentic_rag.rag.answer import assemble_context, generate_answer, load_prompt
+from agentic_rag.rag.answer import assemble_context, load_prompt
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
 
@@ -174,7 +175,8 @@ def check_citations(answer: str, retrieved: List[Hit]) -> tuple[List[str], List[
 
 # ───────────────────────────── running ─────────────────────────────
 
-def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] = None) -> dict:
+def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] = None,
+        ids: Optional[List[str]] = None) -> dict:
     config = load_config()
     version = eval_dataset_version(dataset)
 
@@ -183,19 +185,26 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] =
     retriever = build_retriever(config)
     generator_llm = build_llm(config, role="generator")
     judge_llm = build_llm(config, role="judge")
-    system_prompt = load_prompt(config, "answer_with_citations")
+    # The answerer is the naive-vs-agentic switch (config agent.enabled). Built once, reused.
+    answerer = build_answerer(config, retriever, generator_llm)
     judge_prompt = load_prompt(config, "judge_faithfulness")
-    top_k = config["retrieval"]["top_k"]
 
     logger.info(f"eval dataset version: v{version}")
     questions = load_eval_dataset(dataset)
+    if ids:
+        wanted = set(ids)
+        selected = []
+        for q in questions:
+            if q.id in wanted:
+                selected.append(q)
+        questions = selected
     if limit is not None:
         questions = questions[:limit]
 
     logger.info(f"Scoring {len(questions)} questions (generate + faithfulness-judge LLM calls)...\n")
     results = []
     for i, q in enumerate(questions, start=1):
-        generated = generate_answer(q.question, retriever, generator_llm, system_prompt, top_k)
+        generated = answerer.answer(q.question)
         abstained = is_abstention(generated.answer)
 
         verdict = None
@@ -324,6 +333,7 @@ def persist(summary: dict, results: List[FaithResult], config: dict, version: st
         "temperature": config["llm"]["temperature"],
         "max_tokens": config["llm"]["max_tokens"],
         "retrieval": retrieval_config_snapshot(config),
+        "agent": agent_config_snapshot(config),
     }
 
     record = {
@@ -346,10 +356,13 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Only score the first N questions (quick check).")
     parser.add_argument("--dataset", default=None,
                         help="Eval dataset YAML to score against (default: config eval.dataset).")
+    parser.add_argument("--ids", default=None,
+                        help="Comma-separated question ids to score (e.g. q22,q26,q41) — a targeted subset.")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
+    ids = [token.strip() for token in args.ids.split(",")] if args.ids else None
     configure_run_logging("evals/faithfulness")
-    run(save=not args.no_save, limit=args.limit, dataset=args.dataset)
+    run(save=not args.no_save, limit=args.limit, dataset=args.dataset, ids=ids)
 
 
 if __name__ == "__main__":
