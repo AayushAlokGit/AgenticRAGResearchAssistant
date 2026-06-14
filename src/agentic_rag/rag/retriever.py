@@ -123,6 +123,109 @@ def reciprocal_rank_fusion(dense_hits: List[Hit], sparse_hits: List[Hit], rrf_k:
     return fused_hits
 
 
+def _merge_index_ranges(ranges):
+    """Merge overlapping/adjacent [lo, hi] index ranges into contiguous ones."""
+    if not ranges:
+        return []
+    ordered = sorted(ranges)
+    merged = [list(ordered[0])]
+    for lo, hi in ordered[1:]:
+        last = merged[-1]
+        if lo <= last[1] + 1:          # overlapping OR directly adjacent -> one window
+            last[1] = max(last[1], hi)
+        else:
+            merged.append([lo, hi])
+    return merged
+
+
+def _join_with_overlap_trim(texts, max_overlap):
+    """Concatenate consecutive chunk texts, trimming the sliding-window overlap they share.
+
+    Fixed-size chunks overlap by ~chunk_overlap chars, so naive concatenation would
+    duplicate that seam. We find the largest suffix of the accumulated text that is also a
+    prefix of the next chunk (up to max_overlap) and drop it.
+    """
+    if not texts:
+        return ""
+    merged = texts[0]
+    for text in texts[1:]:
+        limit = min(len(merged), len(text), max_overlap)
+        k = limit
+        joined = False
+        while k > 0:
+            if merged[-k:] == text[:k]:
+                merged = merged + text[k:]
+                joined = True
+                break
+            k -= 1
+        if not joined:
+            merged = merged + " " + text
+    return merged
+
+
+class ParentExpansionRetriever:
+    """Small-to-big: retrieve precise child chunks, then expand each into its contiguous
+    neighbourhood (same source, ±window) merged into a 'parent' window for the generator.
+
+    Adds CONTIGUOUS, same-location context (the rest of a split table/section) WITHOUT
+    pulling in separately-ranked chunks from elsewhere — so it raises coverage without
+    raising the distractor count (the failure mode a bigger top_k hit). Wraps whatever it's
+    given (typically the reranked retriever): retrieve+rank children, then expand.
+    """
+
+    def __init__(self, base, store: ChromaVectorStore, window: int, max_overlap: int):
+        self.base = base
+        self.store = store
+        self.window = window
+        self.max_overlap = max_overlap
+        self.name = f"{base.name}+parent{window}"
+
+    def query(self, text: str, k: int) -> List[Hit]:
+        child_hits = self.base.query(text, k)
+        if not child_hits:
+            return []
+
+        # Collect each child's ±window range, grouped by source (with its score + center).
+        windows_by_source = {}
+        for hit in child_hits:
+            window = (hit.chunk_index - self.window, hit.chunk_index + self.window,
+                      hit.score, hit.chunk_index)
+            windows_by_source.setdefault(hit.source, []).append(window)
+
+        parents: List[Hit] = []
+        for source, windows in windows_by_source.items():
+            chunks = self.store.fetch_source_chunks(source)   # {index: text}
+            if not chunks:
+                continue
+            max_index = max(chunks)
+
+            # Clamp each window to existing indices, then merge adjacent/overlapping ones.
+            clamped = []
+            for lo, hi, score, center in windows:
+                clamped.append((max(0, lo), min(max_index, hi)))
+            merged_ranges = _merge_index_ranges(clamped)
+
+            for lo, hi in merged_ranges:
+                # Stitch the contiguous chunk texts in this range into one parent window.
+                texts = []
+                for index in range(lo, hi + 1):
+                    if index in chunks:
+                        texts.append(chunks[index])
+                parent_text = _join_with_overlap_trim(texts, self.max_overlap)
+
+                # Carry the best child score in this range (for ranking parents) + its index.
+                best_score = None
+                rep_index = lo
+                for wlo, whi, score, center in windows:
+                    if lo <= center <= hi and (best_score is None or score > best_score):
+                        best_score = score
+                        rep_index = center
+                parents.append(Hit(source, rep_index, parent_text, best_score or 0.0))
+
+        parents.sort(key=lambda hit: hit.score, reverse=True)
+        return parents
+
+
 def build_base_retriever(config: dict, mode: str, dense: DenseRetriever, store: ChromaVectorStore):
     """Build the stage-1 retriever (dense or hybrid) — the candidate generator."""
     if mode == "dense":
@@ -163,15 +266,25 @@ def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[b
     if rerank is None:
         rerank = rerank_cfg.get("enabled", False)
 
-    logger.info("building retriever: mode=%s, rerank=%s, store holds %d chunks", mode, rerank, store.count())
-    if not rerank:
-        return base
+    pe_cfg = retrieval_cfg.get("parent_expansion", {})
+    parent_on = pe_cfg.get("enabled", False)
+    logger.info("building retriever: mode=%s, rerank=%s, parent_expansion=%s, store holds %d chunks",
+                mode, rerank, parent_on, store.count())
 
-    # Stage 2: wrap the base in a cross-encoder reranker (imported here so the dependency
-    # only loads when reranking is actually on).
-    from agentic_rag.rag.rerank import CrossEncoderReranker, DEFAULT_MODEL
+    if rerank:
+        # Stage 2: wrap the base in a cross-encoder reranker (imported here so the dependency
+        # only loads when reranking is actually on).
+        from agentic_rag.rag.rerank import CrossEncoderReranker, DEFAULT_MODEL
 
-    reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL))
-    candidate_k = rerank_cfg.get("candidate_k", 20)
-    logger.debug("reranking on: candidate_k=%s -> top_k", candidate_k)
-    return RerankRetriever(base, reranker, candidate_k)
+        reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL))
+        candidate_k = rerank_cfg.get("candidate_k", 20)
+        logger.debug("reranking on: candidate_k=%s -> top_k", candidate_k)
+        base = RerankRetriever(base, reranker, candidate_k)
+
+    if parent_on:
+        # Stage 3 (optional): expand each retrieved child to its contiguous neighbours.
+        window = pe_cfg.get("window", 1)
+        max_overlap = config["ingestion"]["chunk_overlap"] + 100  # cover the seam + snap drift
+        base = ParentExpansionRetriever(base, store, window, max_overlap)
+
+    return base

@@ -110,6 +110,23 @@ class ChromaVectorStore:
             })
         return chunks
 
+    def fetch_source_chunks(self, source: str) -> dict:
+        """Return ``{chunk_index: text}`` for every chunk of one source document.
+
+        Used by parent-expansion to pull a retrieved chunk's contiguous neighbours. A
+        document has at most a few dozen chunks, so fetching them all and slicing in memory
+        is cheap (and avoids guessing which neighbour ids exist).
+        """
+        got = self.collection.get(where={"source": source}, include=["documents", "metadatas"])
+        documents = got.get("documents", [])
+        metadatas = got.get("metadatas", [])
+
+        by_index = {}
+        for i in range(len(documents)):
+            meta = metadatas[i] or {}
+            by_index[meta.get("chunk_index", -1)] = documents[i]
+        return by_index
+
     def reset(self) -> None:
         """Drop and recreate the collection (full wipe)."""
         self.client.delete_collection(self.collection_name)

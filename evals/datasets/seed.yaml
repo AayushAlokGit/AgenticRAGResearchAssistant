@@ -1,20 +1,42 @@
-# Seed eval set — v2
+# Seed eval set — v3
 #
-# 32 hand-written questions (29 answerable + 3 abstention) over the FROZEN 11-doc corpus
-# snapshot in `corpus/`. v2 added q13–q32 to give the retrieval-recall metric headroom
-# (v1's recall@5 saturated at 1.0) and to cover docs v1 never targeted.
+# 43 hand-written questions (40 answerable + 3 abstention) over the FROZEN corpus
+# snapshot in `corpus/`.
+#   v1: q01–q12 — naive baseline coverage of the MCP-server (ChromaDB/Azure) docs.
+#   v2: q13–q32 — added headroom (v1's recall@5 saturated at 1.0) + covered docs v1 missed.
+#   v3: q33–q43 — covers THREE new docs added to the corpus (CHUNKING.md, RERANKING.md,
+#        VECTOR_DB_INTERNALS.md). These are a DIFFERENT domain from the rest: they describe
+#        RAG techniques in general AND *this very project's* pipeline (its cross-encoder
+#        reranker, chunker, vector store), whereas the older docs describe the separate
+#        Documentation-Retrieval MCP server. The corpus therefore now contains TWO
+#        self-referential RAG systems — see the disambiguation note below. v3 also
+#        reconciled q11 (abstention → factual: RERANKING.md now NAMES the reranker, so the
+#        old "no reranker exists" premise is false) and added q43 as a replacement
+#        abstention case to keep 3 abstention questions total.
 # This file is the source of truth for "did that change help?" (DD-001). It is versioned
 # so a single retriever/prompt/config change can be A/B tested against a fixed baseline.
 #
 # Ground truth was written by reading the cited documents — every `expected_sources`
 # entry has been verified to actually contain the answer. Do not add a source you have
-# not read. All 32 expected_answers were independently re-verified against the corpus
-# (2026-06-13) before being used as answer-quality-judge ground truth.
+# not read. All v3 expected_answers were verified against the three new docs (2026-06-14);
+# all v1/v2 expected_answers were independently re-verified earlier (2026-06-13).
 #
 # Corpus self-contradictions to AVOID as ground truth for FUTURE questions:
 #   - tool count (4 vs 5): 01-Architecture contradicts itself — pin the source carefully.
 #   - PROJECT_README mixes cloud/Azure AND 100%-local: unreliable for embedding provider/dims.
 #   - CHROMADB_DATA_VIEWING_GUIDE shows two different document counts (21 vs 17).
+#
+# TWO-SYSTEM DISAMBIGUATION HAZARD (critical for v3 and future questions):
+#   The corpus now describes two self-referential RAG systems. NEVER write a question whose
+#   ground truth depends on which system the reader assumes. Two facts collide in particular:
+#   - HNSW + cosine: claimed by the MCP server's ChromaDB (02-Architecture, q07) AND
+#     discussed generically in VECTOR_DB_INTERNALS.md. Scope HNSW/cosine questions to one.
+#   - chunk size: the OLD docs config the MCP server at CHUNK_SIZE=1000 / OVERLAP=200;
+#     CHUNKING.md says THIS project is at 800-char / 100-char overlap (DD-006). A bare
+#     "what chunk size?" is ambiguous across systems — avoid it or pin the system explicitly.
+#   Scope every new-doc question so it is unambiguously about (a) a RAG technique in general,
+#   or (b) THIS project's pipeline (the new docs). Do NOT lean on the new docs' meta-text
+#   (they reference eval IDs like "q01/q25" and "DD-014" verbatim) — ask about the concepts.
 #
 # ── Schema (per question) ───────────────────────────────────────────────────────────
 #   id                : stable handle (q01…), so score deltas are trackable across runs.
@@ -42,7 +64,7 @@
 # DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB, REFINED_MCP_TOOLS_PLAN) — they serve as retrieval noise
 # for now and are fair game for future questions.
 
-version: 2
+version: 3
 corpus: ./corpus            # the frozen snapshot these questions are written against
 
 questions:
@@ -146,13 +168,14 @@ questions:
     notes: "Topical-but-absent. Tempting to fabricate config because adjacent provider docs exist."
 
   - id: q11
-    type: abstention
-    question: "Which reranking model does the pipeline use to reorder vector-search results before returning them?"
+    type: factual
+    question: "In this project's retrieval pipeline, which cross-encoder reranker model reorders the stage-1 candidates, and from how many candidates down to how many results does it cut?"
     match: any
-    expected_sources: []
-    should_abstain: true
-    expected_answer: "Not enough information. The system uses vector (semantic) search plus metadata filtering; no reranking model is described anywhere in the corpus."
-    notes: "Probes a false premise — the system has no reranker. A naive RAG will happily invent one."
+    expected_sources:
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "cross-encoder/ms-marco-MiniLM-L-6-v2 re-scores the candidate_k=20 stage-1 candidates down to top_k=5."
+    notes: "RECONCILED in v3 (was abstention in v1/v2). RERANKING.md now names this project's reranker, so the old 'no reranker exists' premise is false. Scoped to THIS project's pipeline so it cannot be confused with the MCP-server docs (which have no reranker). The 20→5 funnel + model name live only in RERANKING.md §9."
 
   - id: q12
     type: abstention

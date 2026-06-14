@@ -30,6 +30,8 @@ def retrieval_config_snapshot(config: dict) -> dict:
     ingestion = config["ingestion"]
     rerank = retrieval.get("rerank", {})
     rerank_on = rerank.get("enabled", False)
+    parent = retrieval.get("parent_expansion", {})
+    parent_on = parent.get("enabled", False)
     return {
         "embedding": config["embedding"]["model"],
         "chunk_strategy": ingestion.get("chunking", {}).get("strategy", "fixed"),
@@ -40,6 +42,8 @@ def retrieval_config_snapshot(config: dict) -> dict:
         "rerank_enabled": rerank_on,
         "rerank_model": rerank.get("model") if rerank_on else None,
         "rerank_candidate_k": rerank.get("candidate_k") if rerank_on else None,
+        "parent_expansion": parent_on,
+        "parent_window": parent.get("window") if parent_on else None,
         "hybrid_rrf_k": retrieval.get("hybrid", {}).get("rrf_k"),
         "hybrid_candidate_k": retrieval.get("hybrid", {}).get("candidate_k"),
     }
