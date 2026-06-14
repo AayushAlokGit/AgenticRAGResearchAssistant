@@ -1,120 +1,76 @@
-# Naive-baseline configuration.
-#
-# Every value here is a STARTING GUESS, not a tuned setting. They are knobs to be
-# moved and measured against the eval set (see DESIGN_DECISIONS.md DD-001). This file
-# is versioned so eval runs are reproducible and single changes can be A/B tested.
+# Versioned eval config — knobs to A/B against the eval set. Rationale + A/B
+# numbers live in DESIGN_DECISIONS.md / docs/EXPERIMENTS.md (DD refs below).
 
 llm:
-  # Two providers now (DD-004 → multi-tier): Gemini (paid GOOGLE_API_KEY) + Groq (free).
-  # provider_order is the FALLBACK order for a role with no explicit provider; first = default.
-  # Gemini paid = high throughput + big context (escapes Groq's 6K-TPM per-request wall that
-  # broke the agent loop); Groq kept as a free fallback + the cross-family judge.
+  # Fallback order for a role with no explicit provider; first = default (DD-004, DD-021).
   provider_order: [gemini, groq] # later, also: anthropic, ollama
   models:
-    gemini: gemini-2.5-flash # Gemini default (fast, 1M context, high paid limits) — GOOGLE_API_KEY
-    groq: llama-3.3-70b-versatile # Groq default model
-  # Per-role provider+model (DD-013). Form: {provider, model} (explicit) or a bare model
-  # string (= that model on the default provider). WHY split generator and judge:
-  #   1. Removes self-evaluation bias — a judge from a DIFFERENT model FAMILY (gpt-oss, not
-  #      Gemini) can't rubber-stamp its own generations.
-  #   2. Right tool per role — Gemini's throughput/context for the heavy generation+agent
-  #      loop; Groq's free gpt-oss bucket for the cheap judging.
+    gemini: gemini-2.5-flash # default model per provider
+    groq: llama-3.3-70b-versatile
+  # Per-role provider+model (DD-013/DD-021). Form: {provider, model}, or a bare
+  # string = that model on the default provider. Split generator/judge to remove
+  # self-eval bias and give each role its own token bucket.
   roles:
-    # Generator/agent on Gemini: paid key → no 6K-TPM wall, room for the agent's accumulated
-    # context. NOTE: this changes the eval ANCHOR (the .775/.850 baseline was 8b) — re-baseline
-    # naive-on-Gemini before reading any agentic A/B against it.
-    generator: {provider: gemini, model: gemini-2.5-flash-lite} # cheapest/fastest; flash / pro are stronger upgrades (eval-gated)
-    # generator: llama-3.1-8b-instant     # (Groq fallback options, bare-string = default provider)
-    # generator: meta-llama/llama-4-scout-17b-16e-instruct
-    # Judge on Gemini pro: a STRONGER model than the flash-lite generator. Same family, so some
-    # self-eval bias remains — but it CANCELS in an A/B (it hits both arms equally), and pro has
-    # the paid budget the Groq gpt-oss judge ran out of. For a clean ABSOLUTE faithfulness number,
-    # re-judge with a cross-family model (groq gpt-oss / qwen) when its bucket resets.
+    generator: {provider: gemini, model: gemini-2.5-flash-lite} # flash / pro are eval-gated upgrades
     judge: {provider: gemini, model: gemini-2.5-pro}
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
-  # The Groq SDK retries 429/5xx/timeout/connection errors with exponential backoff +
-  # jitter (honoring Retry-After). Bumped above the default 2 for eval bursts. The router
-  # falls through to the NEXT provider only after a provider exhausts these retries.
-  max_retries: 5
+  max_retries: 5 # provider-level backoff before the router falls through to the next tier
   timeout: 30.0 # seconds per request
 
 embedding:
-  # Local + free + offline; needs NO API key. NOTE: Groq has no embeddings endpoint
-  # (text-gen + Whisper only), so embeddings CANNOT be Groq — local is the natural fit
-  # and is the lightweight choice for limited hardware (22M params, ~80MB, CPU-only).
-  # See DD-004. A stronger embedder (bge/gte/hosted) is a later, eval-gated change.
-  model: sentence-transformers/all-MiniLM-L6-v2 # local, CPU-friendly baseline
+  # Local + offline, no API key. Must stay local: Groq has no embeddings endpoint (DD-004).
+  model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder is eval-gated
 
 retrieval:
-  top_k: 5 # chunks returned per query (8 lost the A/B — distractors hurt; 5 is the champion, DD-017)
-  mode: hybrid # dense | hybrid — hybrid won the A/B (recall@1 +0.10, MRR +0.06), now default (DD-009)
+  top_k: 5 # chunks per query — 5 is the champion, 8 lost to distractors (DD-017)
+  mode: hybrid # dense | hybrid — hybrid won (DD-009)
   hybrid:
-    # Hybrid = dense (vector) + BM25 (keyword), fused by Reciprocal Rank Fusion.
+    # dense (vector) + BM25 (keyword), fused by Reciprocal Rank Fusion.
     rrf_k: 60 # RRF damping constant (standard default)
     candidate_k: 20 # chunks pulled from EACH retriever before fusing down to top_k
   rerank:
-    # Stage 2 (DD-014): a cross-encoder re-scores each (query, chunk) PAIR jointly for
-    # precision, fixing "right doc, wrong chunk" misses the bi-encoder/RRF ordering can't.
-    # A/B won decisively (recall@3 0.793->0.931, @5 0.897->1.000, MRR 0.903->0.948) — ON (DD-014).
+    # Stage 2: cross-encoder re-scores (query, chunk) pairs for precision (DD-014).
     enabled: true
-    model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local, CPU-friendly cross-encoder
-    candidate_k: 20 # chunks the stage-1 base hands the reranker (re-scored down to top_k)
+    model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local cross-encoder
+    candidate_k: 20 # chunks handed from stage 1, re-scored down to top_k
   parent_expansion:
-    # Stage 3 — small-to-big (DD-019 follow-up): after reranking to top_k child chunks,
-    # expand each into its ±window contiguous neighbours (same source) and merge — restores
-    # split tables/sections WITHOUT adding cross-topic distractors (unlike a bigger top_k).
-    # window=1 => 3-chunk parent windows. A/B won (answer 0.690->0.759, reproduced x2,
-    # recall unchanged) — ON (DD-020).
+    # Stage 3 small-to-big: expand each top_k chunk into its ±window same-source
+    # neighbours to restore split tables/sections without distractors (DD-020).
     enabled: true
-    window: 1
+    window: 1 # window=1 => 3-chunk parent windows
 
 agent:
-  # Module 2: when enabled, the answer path becomes a retrieve->reason->retrieve LOOP (the
-  # model reformulates queries and decides when it has enough) instead of one fixed retrieval.
-  # ON by default — the loop WON its matched A/B (DD-022): vs the naive-Gemini anchor it took
-  # correctness .750->.800 and faithfulness .944->.975 and killed all 4 false-abstentions
-  # (both judged by gemini-2.5-pro, so judge bias cancels). Flip to false to recover the naive
-  # single-shot baseline for a re-A/B. Cost it bought: ~3-4x latency (multiple calls/question).
+  # When on, the answer path is a retrieve->reason->retrieve loop (Module 2).
+  # ON by default — won its matched A/B (DD-022). Flip to false for the naive baseline.
   enabled: true
-  max_rounds: 3 # hard budget: max search rounds before a forced answer (the circuit breaker)
-  # Context compaction (a thin slice of Module 3): the final-answer prompt is trimmed to this
-  # many characters of gathered evidence so it fits the model's per-request token ceiling.
-  # ~16000 chars ≈ 4K tokens of evidence; with the prompt + question + completion that lands
-  # safely under the 6K-TPM small-model wall that 413'd the unbounded loop, while leaving room
-  # for a multi-hop answer to keep evidence from several searches (10000 was too tight — it
-  # trimmed away later-search hits the agent had deliberately gone to fetch). Starting guess;
-  # the right value is eval-tuned. Raise it further on a higher-TPM model (scout, 70b).
+  max_rounds: 3 # hard budget: max search rounds before a forced answer (circuit breaker)
+  # Final-answer evidence trimmed to this many chars so it fits the per-request token
+  # ceiling. Eval-tuned guess; raise on a higher-throughput model (DD-022).
   answer_char_budget: 16000
 
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
 
 vector_store:
-  # Naive baseline store (DD-006): persistent ChromaDB, cosine HNSW. We pass our own
-  # local embeddings in rather than letting Chroma embed, so the embedder stays swappable.
+  # Persistent ChromaDB (cosine HNSW); we pass local embeddings in so the embedder
+  # stays swappable (DD-006).
   provider: chromadb
   path: ./chromadb_data # persistent dir (gitignored)
   collection: corpus
 
 ingestion:
-  # Content-hash idempotency tracker (DD-006): sha256 of file bytes, NOT mtime/size —
-  # so a git checkout doesn't trigger needless re-embedding. Lives next to the store.
+  # sha256-of-bytes idempotency tracker (not mtime/size), so a git checkout doesn't
+  # force re-embedding (DD-006).
   tracking_file: ./chromadb_data/processed_files.json
-  # Chunking is an INGESTION-time operation (only ingest.py consumes these; the retriever
-  # never sees them), so it lives here, not under retrieval.
-  chunk_size: 800 # characters; naive fixed-size chunking to start
+  # Chunking is ingestion-time only (the retriever never sees these knobs).
+  chunk_size: 800 # characters
   chunk_overlap: 100
   chunking:
-    # fixed = naive sliding window (A1); recursive = format-agnostic, boundary-respecting
-    # split (B1: paragraph>line>sentence>word>char). recursive LOST the A/B at this
-    # chunk_size (regressed multi_hop recall + 3 false abstentions) — kept fixed (DD-017).
-    strategy: fixed
+    strategy: fixed # fixed | recursive — recursive lost the A/B at this chunk_size (DD-017)
 
 prompts:
-  # Versioned prompt files, loaded by name from this dir (e.g. answer_system.md,
-  # answer_user.md). Kept out of code so a prompt change is A/B testable.
-  dir: ./prompts
+  dir: ./prompts # versioned prompt files, loaded by name, so a prompt change is A/B testable
 
 eval:
   dataset: ./evals/datasets/seed.yaml
