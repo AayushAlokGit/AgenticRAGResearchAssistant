@@ -22,9 +22,8 @@ llm:
   #      stamp its own generations (the caveat we documented for the single-model setup).
   # gpt-oss-120b is a strong, different-family judge with the higher daily ceiling.
   roles:
-    # (scout was held constant for the chunking A/B, DD-017; restored to 70b after.)
-    # generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
     generator: llama-3.3-70b-versatile # 100K TPD / 6K TPM
+    # generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM (A/B-only)
     judge: openai/gpt-oss-120b # different family + own 200K TPD bucket
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
@@ -49,7 +48,7 @@ retrieval:
     # split (B1: paragraph>line>sentence>word>char). recursive LOST the A/B at this
     # chunk_size (regressed multi_hop recall + 3 false abstentions) — kept fixed (DD-017).
     strategy: fixed
-  top_k: 5 # chunks returned per query
+  top_k: 5 # chunks returned per query (8 lost the A/B — distractors hurt; 5 is the champion, DD-017)
   mode: hybrid # dense | hybrid — hybrid won the A/B (recall@1 +0.10, MRR +0.06), now default (DD-009)
   hybrid:
     # Hybrid = dense (vector) + BM25 (keyword), fused by Reciprocal Rank Fusion.

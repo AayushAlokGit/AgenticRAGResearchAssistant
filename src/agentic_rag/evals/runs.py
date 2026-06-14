@@ -18,3 +18,27 @@ def eval_run_path(metric: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%d_%m_%Y_%H_%M_%S")
     return out_dir / f"{stamp}.json"
+
+
+def retrieval_config_snapshot(config: dict) -> dict:
+    """The retrieval-relevant knobs, embedded in every run record so a run is self-describing.
+
+    Lets you read any eval JSON and know exactly what pipeline produced it — which mode,
+    rerank on/off + model, chunking, top_k — without guessing from the timestamp.
+    """
+    retrieval = config["retrieval"]
+    rerank = retrieval.get("rerank", {})
+    rerank_on = rerank.get("enabled", False)
+    return {
+        "embedding": config["embedding"]["model"],
+        "chunk_strategy": retrieval.get("chunking", {}).get("strategy", "fixed"),
+        "chunk_size": retrieval["chunk_size"],
+        "chunk_overlap": retrieval["chunk_overlap"],
+        "mode": retrieval.get("mode", "dense"),
+        "top_k": retrieval["top_k"],
+        "rerank_enabled": rerank_on,
+        "rerank_model": rerank.get("model") if rerank_on else None,
+        "rerank_candidate_k": rerank.get("candidate_k") if rerank_on else None,
+        "hybrid_rrf_k": retrieval.get("hybrid", {}).get("rrf_k"),
+        "hybrid_candidate_k": retrieval.get("hybrid", {}).get("candidate_k"),
+    }

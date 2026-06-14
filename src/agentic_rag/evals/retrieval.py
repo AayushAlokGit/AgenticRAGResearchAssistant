@@ -32,7 +32,7 @@ from typing import Dict, List, Optional
 
 from agentic_rag.config import load_config
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
-from agentic_rag.evals.runs import eval_run_path
+from agentic_rag.evals.runs import eval_run_path, retrieval_config_snapshot
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
@@ -261,16 +261,19 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
     for k in K_VALUES:
         recall_summary[str(k)] = summary["recall"][k]
 
+    # `mode` here is the retriever's name (e.g. "hybrid+rerank" / "dense"), which is the
+    # ACTUAL pipeline used — it may differ from config when --mode/--rerank override it. So
+    # reflect that reality over the config defaults for the two fields the CLI can override.
+    run_config = retrieval_config_snapshot(config)
+    run_config["rerank_enabled"] = mode.endswith("+rerank")
+    run_config["mode"] = mode.replace("+rerank", "")
+
     record = {
         "timestamp": path.stem,
         "metric": "retrieval_recall",
         "mode": mode,
         "k_values": list(K_VALUES),
-        "config": {
-            "embedding": config["embedding"]["model"],
-            "chunk_size": config["retrieval"]["chunk_size"],
-            "chunk_overlap": config["retrieval"]["chunk_overlap"],
-        },
+        "config": run_config,
         "summary": {**summary, "recall": recall_summary},
         "per_question": per_question,
     }

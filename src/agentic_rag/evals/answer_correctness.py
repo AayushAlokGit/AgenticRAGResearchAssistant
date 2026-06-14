@@ -47,7 +47,7 @@ from typing import List, Optional
 
 from agentic_rag.config import load_config
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
-from agentic_rag.evals.runs import eval_run_path
+from agentic_rag.evals.runs import eval_run_path, retrieval_config_snapshot
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.llm.provider import build_llm, role_model
 from agentic_rag.rag.answer import generate_answer, load_prompt
@@ -298,9 +298,20 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
             "retrieved": retrieved,
         })
 
+    # Self-describing run record: the LLM roles + temperature/max_tokens that drove
+    # generation and judging, plus the retrieval pipeline the answers were built on.
+    run_config = {
+        "generator_model": role_model(config, "generator"),
+        "judge_model": role_model(config, "judge"),
+        "temperature": config["llm"]["temperature"],
+        "max_tokens": config["llm"]["max_tokens"],
+        "retrieval": retrieval_config_snapshot(config),
+    }
+
     record = {
         "timestamp": path.stem,
         "metric": "answer_correctness",
+        "config": run_config,
         "summary": summary,
         "per_question": per_question,
     }
