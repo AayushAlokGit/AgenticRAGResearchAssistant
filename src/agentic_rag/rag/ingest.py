@@ -31,7 +31,7 @@ from typing import List
 
 from agentic_rag.config import load_config, resolve_path
 from agentic_rag.logging_setup import configure_run_logging
-from agentic_rag.rag.chunking import chunk_text
+from agentic_rag.rag.chunking import chunk_document
 from agentic_rag.rag.embeddings import LocalEmbedder
 from agentic_rag.rag.tracker import DocumentProcessingTracker
 from agentic_rag.rag.vector_store import ChromaVectorStore
@@ -54,13 +54,14 @@ def ingest(force: bool = False) -> None:
     corpus_root = resolve_path(config["corpus"]["root"])
     chunk_size = config["retrieval"]["chunk_size"]
     overlap = config["retrieval"]["chunk_overlap"]
+    strategy = config["retrieval"].get("chunking", {}).get("strategy", "fixed")
     vs_cfg = config["vector_store"]
 
     store = ChromaVectorStore(resolve_path(vs_cfg["path"]), vs_cfg["collection"])
     tracker = DocumentProcessingTracker(resolve_path(config["ingestion"]["tracking_file"]))
     embedder = LocalEmbedder(config["embedding"]["model"])
 
-    logger.info(f"[ingest] corpus = {corpus_root}")
+    logger.info(f"[ingest] corpus = {corpus_root}  chunking={strategy} ({chunk_size}/{overlap})")
     if force:
         logger.info("[ingest] --force: wiping collection + tracker")
         store.reset()
@@ -94,7 +95,7 @@ def ingest(force: bool = False) -> None:
         if is_update:
             store.delete_by_source(source)
 
-        chunks = chunk_text(path.read_text(encoding="utf-8"), chunk_size, overlap)
+        chunks = chunk_document(path.read_text(encoding="utf-8"), chunk_size, overlap, strategy)
         store.add(source, chunks, embedder.embed(chunks))
         tracker.mark_processed(path, chunk_count=len(chunks))
         total_chunks += len(chunks)

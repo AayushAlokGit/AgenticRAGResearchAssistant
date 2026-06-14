@@ -18,11 +18,21 @@ baseline.
 """
 from __future__ import annotations
 
-from typing import List
+import logging
+from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 # How far back from a hard cut we'll look for whitespace to snap to. Small, so we never
 # wander far from the target chunk size.
 _SNAP_WINDOW = 100
+
+# Separator hierarchy for recursive splitting, highest-level boundary first. Format-AGNOSTIC
+# (paragraph blank-line -> line -> sentence -> word -> character) — these exist in any plain
+# text, so the splitter never parses markdown/HTML/PDF structure. "" is the terminal: a hard
+# character cut when nothing better remains. (LangChain's RecursiveCharacterTextSplitter uses
+# the same idea; hand-rolled here to keep the substrate dependency-free and transparent.)
+_RECURSIVE_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
@@ -62,3 +72,112 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
             break
         start = end - overlap  # step forward, keeping `overlap` chars of context
     return chunks
+
+
+# ───────────────────────────── recursive splitting ─────────────────────────────
+#
+# The format-agnostic upgrade from fixed-size (see docs/rag/CHUNKING.md). Two phases:
+#   1. SPLIT the text into atomic units no larger than chunk_size, preferring the highest
+#      natural boundary (paragraph > line > sentence > word > char) — so we only fall back
+#      to cutting a word when nothing larger fits.
+#   2. MERGE consecutive units greedily into chunks near chunk_size, carrying an `overlap`
+#      tail of real content from each chunk into the next (boundary insurance).
+
+def _choose_separator(text: str, separators: List[str]) -> Tuple[str, List[str]]:
+    """Pick the highest-priority separator that occurs in `text`.
+
+    Returns (separator, lower_priority_separators_still_to_try). The terminal "" separator
+    means "no natural boundary left — hard-cut by character".
+    """
+    for index, separator in enumerate(separators):
+        if separator == "":
+            return "", []
+        if separator in text:
+            return separator, separators[index + 1:]
+    return "", []
+
+
+def _hard_split(text: str, chunk_size: int) -> List[str]:
+    """Last resort: cut every `chunk_size` characters (used when no separator remains)."""
+    pieces = []
+    for start in range(0, len(text), chunk_size):
+        pieces.append(text[start:start + chunk_size])
+    return pieces
+
+
+def _split_to_units(text: str, chunk_size: int, separators: List[str]) -> List[str]:
+    """Recursively break `text` into pieces each <= chunk_size, best boundary first."""
+    if len(text) <= chunk_size:
+        return [text] if text.strip() else []
+
+    separator, remaining = _choose_separator(text, separators)
+    if separator == "":
+        return _hard_split(text, chunk_size)
+
+    units = []
+    for part in text.split(separator):
+        if not part.strip():
+            continue
+        if len(part) <= chunk_size:
+            units.append(part)
+        else:
+            # Still too big — recurse with the next-lower separator (or hard-split).
+            units.extend(_split_to_units(part, chunk_size, remaining))
+    return units
+
+
+def _carry_overlap(units: List[str], overlap: int) -> Tuple[List[str], int]:
+    """Take trailing units totalling up to `overlap` chars to seed the next chunk."""
+    if overlap <= 0:
+        return [], 0
+    carried = []
+    length = 0
+    for unit in reversed(units):
+        if carried and length + len(unit) + 1 > overlap:
+            break
+        carried.insert(0, unit)
+        length += len(unit) + 1
+    return carried, length
+
+
+def _merge_units(units: List[str], chunk_size: int, overlap: int) -> List[str]:
+    """Greedily combine units into chunks near chunk_size, with an overlap tail between them."""
+    chunks = []
+    current: List[str] = []
+    current_len = 0
+    for unit in units:
+        # +1 accounts for the space we join units with.
+        if current and current_len + len(unit) + 1 > chunk_size:
+            chunks.append(" ".join(current))
+            current, current_len = _carry_overlap(current, overlap)
+        current.append(unit)
+        current_len += len(unit) + (1 if current_len else 0)
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def recursive_chunk(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """Recursive splitting: respect natural text boundaries, then merge to ~chunk_size.
+
+    Format-agnostic (operates on universal paragraph/sentence/word boundaries, never on
+    document markup). Same chunk_size/overlap units as fixed-size, so the two are an A/B.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
+    units = _split_to_units(text, chunk_size, _RECURSIVE_SEPARATORS)
+    return _merge_units(units, chunk_size, overlap)
+
+
+# ───────────────────────────── strategy dispatch ─────────────────────────────
+
+def chunk_document(text: str, chunk_size: int, overlap: int, strategy: str = "fixed") -> List[str]:
+    """Chunk `text` with the named strategy: "fixed" (baseline) or "recursive"."""
+    if strategy == "fixed":
+        return chunk_text(text, chunk_size, overlap)
+    if strategy == "recursive":
+        return recursive_chunk(text, chunk_size, overlap)
+    raise ValueError(f"Unknown chunking strategy: {strategy!r} (expected 'fixed' or 'recursive')")
