@@ -129,7 +129,41 @@ Different domains, identical skeleton: **cheap recall → expensive precision.**
 - **Metric saturation** — once reranking lifts recall@k to ~1.0, that metric stops
   discriminating; lean on rank-sensitive metrics (MRR/nDCG) and the downstream answer eval.
 
-## 7. Applying this to a new system (the transferable rule)
+## 7. In production: same skeleton, more layers, signals, and ops
+
+The structure (cheap recall → expensive precision) is unchanged in real systems; what gets
+added is *operational* and *signal richness*, not a new core idea.
+
+- **Where it runs.** Either a **hosted rerank API** (Cohere, Voyage, Jina, Mixedbread — POST
+  query+docs, get scores; no GPU to operate, the common default), or a **self-hosted
+  cross-encoder on GPU** (e.g. `BGE-reranker`) behind an optimized server (HF
+  text-embeddings-inference, ONNX Runtime, TensorRT, Triton) for cost-at-scale / data
+  control. Both sit behind the same thin wrapper, so it's a config swap.
+- **The model isn't always a cross-encoder.** Three families: **cross-encoders** (neural,
+  *pointwise* — score each pair alone, what we use); **Learning-to-Rank** (gradient-boosted
+  trees like **LambdaMART** over features — BM25 score, the neural score, **recency,
+  popularity, authority, click-through, personalization**; dominant in web/ecommerce, where
+  the cross-encoder score is just *one feature*); and **LLM rerankers** (*listwise* — prompt
+  an LLM to order the whole set, e.g. RankGPT; highest quality, highest cost). *Pointwise*
+  (score each alone) vs *listwise* (rank the set together, enabling **diversity** so you
+  don't return near-duplicates) is a key axis.
+- **Latency is the central problem** — the reranker is on the live path (tens-of-ms budget)
+  and usually the bottleneck. Mitigations: cap `candidate_k`, **batch all candidates in one
+  GPU pass**, distill/**quantize** (int8) and compile (ONNX/TensorRT), and use a **3+ stage
+  funnel** (retrieve thousands → light ranker → ~100 → heavy cross-encoder/LLM → ~10).
+- **Blended signals + feedback loops.** Production rarely ranks on text relevance alone — it
+  mixes in **recency, authority, personalization, diversity, business rules**, and
+  **retrains on logged clicks/engagement**, rolled out via **online A/B tests** and watched
+  on p99 latency + nDCG.
+- **Graceful degradation.** Wrap the reranker in **timeouts + fallback** (serve the stage-1
+  order if it's slow/down rather than failing the query) and **cache** scores for hot
+  (query, doc) pairs.
+
+The honest takeaway: our reranker is **architecturally the real thing** (cross-encoder,
+joint scoring, candidate pool). What production adds is *operations* (latency, reliability)
+and *signal richness* (business features, feedback) — engineering on top of the same idea.
+
+## 8. Applying this to a new system (the transferable rule)
 
 1. **Are you picking a few best out of many, with a quality-vs-scale tension?** If yes, you
    want two stages — don't try to make one model do both.
@@ -140,7 +174,7 @@ Different domains, identical skeleton: **cheap recall → expensive precision.**
 4. **Tune `candidate_k` as the latency↔quality dial**, and watch for truncation.
 5. **Keep the reranker behind a thin interface** so local vs hosted is one config change.
 
-## 8. In this project (the worked instance)
+## 9. In this project (the worked instance)
 
 `rag/rerank.py` (`CrossEncoderReranker`) + `RerankRetriever` (a wrapper in `retriever.py`
 that composes over dense *or* hybrid). Stage 1 = our hybrid (dense `all-MiniLM-L6-v2` +
