@@ -26,6 +26,9 @@ Honest caveats:
   - Generation and judging are non-deterministic (even at temperature 0), so this metric
     has run-to-run variance — unlike the deterministic retrieval recall. Treat small
     deltas as noise; look for clear movement.
+  - If the judge returns no parseable verdict (an empty/off-format response), we re-ask a
+    few times, then mark the question UNGRADED and EXCLUDE it from the rate — a missing
+    measurement must not masquerade as a wrong answer (this previously sank q13 falsely).
   - Faithfulness (is the answer grounded in the retrieved context, no hallucination?) is a
     SEPARATE reference-free judge, added as the next layer.
 
@@ -54,6 +57,11 @@ from agentic_rag.rag.vector_store import Hit
 logger = logging.getLogger(__name__)
 
 ABSTENTION_PHRASE = "not enough information"
+
+# Verdict returned when the judge gives no parseable answer (empty/off-format response).
+# Treated as a MISSING measurement, not a wrong answer — see judge_correctness/report.
+UNGRADED = "UNGRADED"
+JUDGE_MAX_ATTEMPTS = 3  # re-ask the judge this many times before giving up on a verdict
 
 
 @dataclass
@@ -88,20 +96,41 @@ def parse_verdict(raw: str) -> str:
         return "INCORRECT"
     if "CORRECT" in first_line:
         return "CORRECT"
-    return "INCORRECT"  # unparseable -> grade conservatively
+    # No verdict token found (e.g. the judge returned an empty or off-format response).
+    # Return UNGRADED — a MISSING measurement — NOT a conservative INCORRECT. An instrument
+    # failure must not masquerade as a real wrong answer; the caller excludes it from the score.
+    return UNGRADED
 
 
 def judge_correctness(llm, judge_prompt: str, question: str, reference: str, candidate: str):
+    """Judge an answer, re-asking a few times if the judge returns no parseable verdict.
+
+    An empty/off-format judge response is a measurement error, not a verdict, and most are
+    transient — so we re-ask up to JUDGE_MAX_ATTEMPTS. If every attempt fails to parse, we
+    return UNGRADED and let report() exclude it from the rate (rather than scoring INCORRECT).
+    """
     user_message = (
         f"QUESTION:\n{question}\n\n"
         f"REFERENCE ANSWER:\n{reference}\n\n"
         f"CANDIDATE ANSWER:\n{candidate}"
     )
-    raw = llm.complete([
+    messages = [
         {"role": "system", "content": judge_prompt},
         {"role": "user", "content": user_message},
-    ])
-    return parse_verdict(raw), raw.strip()
+    ]
+
+    last_raw = ""
+    for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
+        raw = llm.complete(messages)
+        if raw is None:        # provider can return None content on an empty completion
+            raw = ""
+        last_raw = raw.strip()
+        verdict = parse_verdict(raw)
+        if verdict != UNGRADED:
+            return verdict, last_raw
+        logger.warning("judge returned no parseable verdict (attempt %d/%d): %r",
+                       attempt, JUDGE_MAX_ATTEMPTS, last_raw[:80])
+    return UNGRADED, last_raw
 
 
 def describe(result: QAResult) -> str:
@@ -167,6 +196,7 @@ def report(results: List[QAResult], config: dict) -> dict:
     correct = [r for r in answered if r.verdict == "CORRECT"]
     partial = [r for r in answered if r.verdict == "PARTIALLY_CORRECT"]
     incorrect = [r for r in answered if r.verdict == "INCORRECT"]
+    ungraded = [r for r in answered if r.verdict == UNGRADED]  # judge gave no verdict
 
     # Abstention breakdown.
     abstained_correctly = [r for r in abstention if r.abstained]
@@ -199,14 +229,25 @@ def report(results: List[QAResult], config: dict) -> dict:
     if not any_failure:
         logger.info("  (none)")
 
+    # Ungraded questions are listed SEPARATELY — they're not failures, they're missing
+    # measurements (the judge gave no parseable verdict even after retries).
+    if ungraded:
+        logger.info("UNGRADED (judge gave no verdict; excluded from the rate):")
+        for r in ungraded:
+            logger.info(f"  {r.q.id}  (re-run to grade)")
+
+    # Score over the GRADED answerable set: exclude ungraded from the denominator so an
+    # instrument failure neither counts as a success nor as a failure. False abstentions and
+    # incorrects stay in — those are real failures.
     n_answerable = len(answerable)
-    end_to_end = len(correct) / n_answerable if n_answerable else 0.0
+    n_graded = n_answerable - len(ungraded)
+    end_to_end = len(correct) / n_graded if n_graded else 0.0
 
     logger.info(f"\nSUMMARY")
     logger.info(f"  answerable ({n_answerable}):")
     logger.info(f"    answered: {len(answered)}   false-abstention: {len(false_abstentions)}")
-    logger.info(f"    of answered -> CORRECT={len(correct)} PARTIAL={len(partial)} INCORRECT={len(incorrect)}")
-    logger.info(f"    end-to-end success (answered AND correct): {len(correct)}/{n_answerable} = {end_to_end:.3f}")
+    logger.info(f"    of answered -> CORRECT={len(correct)} PARTIAL={len(partial)} INCORRECT={len(incorrect)} UNGRADED={len(ungraded)}")
+    logger.info(f"    end-to-end success (answered AND correct): {len(correct)}/{n_graded} = {end_to_end:.3f}   [excludes {len(ungraded)} ungraded]")
     logger.info(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
 
     return {
@@ -218,6 +259,8 @@ def report(results: List[QAResult], config: dict) -> dict:
         "correct": len(correct),
         "partial": len(partial),
         "incorrect": len(incorrect),
+        "ungraded": len(ungraded),
+        "graded": n_graded,  # answerable minus ungraded; the end-to-end denominator
         "end_to_end_success": end_to_end,
         "abstention_total": len(abstention),
         "abstained_correctly": len(abstained_correctly),

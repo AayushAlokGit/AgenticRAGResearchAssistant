@@ -26,7 +26,8 @@ llm:
     # llama-4-scout: 500K TPD (5x headroom) + 30K TPM (highest here, suits eval bursts),
     # still a different family from the judge (bias fix intact). Eval-gated vs the recorded
     # 70b baseline (end-to-end 19/29=0.655) — revert this one line if it regresses (DD-013).
-    generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
+    # generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
+    generator: llama-3.3-70b-versatile # 100K TPD / 6K TPM
     judge: openai/gpt-oss-120b # different family + own 200K TPD bucket
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
