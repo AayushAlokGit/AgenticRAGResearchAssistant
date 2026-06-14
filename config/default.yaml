@@ -22,8 +22,9 @@ llm:
   #      stamp its own generations (the caveat we documented for the single-model setup).
   # gpt-oss-120b is a strong, different-family judge with the higher daily ceiling.
   roles:
-    generator: llama-3.3-70b-versatile # 100K TPD / 6K TPM
-    # generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM (A/B-only)
+    # scout for v3 evals — 500K TPD headroom avoids the 70b daily wall on the larger set.
+    generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
+    # generator: llama-3.3-70b-versatile # 100K TPD / 6K TPM
     judge: openai/gpt-oss-120b # different family + own 200K TPD bucket
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
@@ -62,6 +63,8 @@ retrieval:
     # recall unchanged) — ON (DD-020).
     enabled: true
     window: 1
+
+corpus:
   root: ./corpus # seed corpus until the user's own docs exist
 
 vector_store:
