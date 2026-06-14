@@ -82,6 +82,18 @@ passages). So the number encodes a *learned, supervised* notion of "does this it
 this query" — strictly more informative than the geometric cosine distance stage 1 uses.
 That's why a reranker routinely fixes "right document retrieved, wrong passage ranked top."
 
+**Important observation — it scores RELEVANCE, not ANSWERABILITY or CORRECTNESS.** What the
+model learned is *"is this passage a good match for this query"* — strong topical/semantic
+alignment between question and passage. That correlates heavily with "contains the answer"
+(which is exactly why it surfaces fact-bearing chunks), but it is **not** a fact-checker: it
+does not verify that the passage's claims are *true*, nor that the eventual answer is
+*correct* or *grounded*. A confidently-written but wrong passage can still score high. Those
+are different jobs handled by different machinery — *answer correctness* (vs a reference) and
+*faithfulness* (grounded in the retrieved context) are scored by the answer-layer evals, not
+by the reranker (see `../evals/ANSWER_QUALITY.md`). Keep the boundary clear: **the reranker's
+job is to put the most relevant passages in front of the generator; judging whether the
+resulting answer is right is a separate stage.**
+
 ## 4. One backbone, different head + training
 
 A reranker is often the **same transformer family** as the embedder, specialized two ways:
