@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from agentic_rag.config import load_config
-from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
+from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset, eval_dataset_version
 from agentic_rag.evals.runs import eval_run_path, retrieval_config_snapshot
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.rag.retriever import build_retriever
@@ -155,16 +155,20 @@ def aggregate(results: List[QuestionResult]) -> tuple[Dict[int, float], float]:
     return recalls, mrr
 
 
-def run(save: bool = True, mode: Optional[str] = None, rerank: Optional[bool] = None) -> dict:
+def run(save: bool = True, mode: Optional[str] = None, rerank: Optional[bool] = None,
+        dataset: Optional[str] = None) -> dict:
     config = load_config()
     depth = max(K_VALUES)
+    version = eval_dataset_version(dataset)
 
     retriever = build_retriever(config, mode=mode, rerank=rerank)
+
+    logger.info(f"eval dataset version: v{version}")
 
     # Recall needs a ground-truth doc to check against, so only score questions that
     # declare expected_sources.
     questions = []
-    for q in load_eval_dataset():
+    for q in load_eval_dataset(dataset):
         if q.expected_sources:
             questions.append(q)
 
@@ -175,7 +179,7 @@ def run(save: bool = True, mode: Optional[str] = None, rerank: Optional[bool] = 
 
     summary = report(results, retriever.name, config)
     if save:
-        persist(summary, results, retriever.name, config)
+        persist(summary, results, retriever.name, config, version)
     return summary
 
 
@@ -224,9 +228,9 @@ def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
     }
 
 
-def persist(summary: dict, results: List[QuestionResult], mode: str, config: dict) -> None:
-    """Write a run record to eval_runs/retrieval_recall/<timestamp>.json (gitignored)."""
-    path = eval_run_path("retrieval_recall")
+def persist(summary: dict, results: List[QuestionResult], mode: str, config: dict, version: str) -> None:
+    """Write a run record to eval_runs/retrieval_recall/v<version>/<timestamp>.json (gitignored)."""
+    path = eval_run_path("retrieval_recall", version)
 
     per_question = []
     for r in results:
@@ -265,8 +269,9 @@ def persist(summary: dict, results: List[QuestionResult], mode: str, config: dic
     # ACTUAL pipeline used — it may differ from config when --mode/--rerank override it. So
     # reflect that reality over the config defaults for the two fields the CLI can override.
     run_config = retrieval_config_snapshot(config)
-    run_config["rerank_enabled"] = mode.endswith("+rerank")
-    run_config["mode"] = mode.replace("+rerank", "")
+    run_config["rerank_enabled"] = "+rerank" in mode
+    run_config["mode"] = mode.split("+")[0]
+    run_config["dataset_version"] = version
 
     record = {
         "timestamp": path.stem,
@@ -291,10 +296,12 @@ def main() -> None:
                         help="Force the cross-encoder rerank stage ON (overrides config).")
     parser.add_argument("--no-rerank", dest="rerank", action="store_false",
                         help="Force the cross-encoder rerank stage OFF (overrides config).")
+    parser.add_argument("--dataset", default=None,
+                        help="Eval dataset YAML to score against (default: config eval.dataset).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
     configure_run_logging("evals/retrieval")
-    run(save=not args.no_save, mode=args.mode, rerank=args.rerank)
+    run(save=not args.no_save, mode=args.mode, rerank=args.rerank, dataset=args.dataset)
 
 
 if __name__ == "__main__":

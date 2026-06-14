@@ -25,6 +25,17 @@ class EvalQuestion:
     notes: str
 
 
+def eval_dataset_version(path: Optional[str] = None) -> str:
+    """The dataset's declared ``version`` (str, ``'unknown'`` if absent).
+
+    Stamped into the run-record path + config so runs against different dataset versions
+    don't get compared as if they were the same baseline.
+    """
+    dataset_path = resolve_path(path or load_config()["eval"]["dataset"])
+    raw = yaml.safe_load(dataset_path.read_text(encoding="utf-8"))
+    return str(raw.get("version", "unknown"))
+
+
 def load_eval_dataset(path: Optional[str] = None) -> List[EvalQuestion]:
     """Parse the YAML eval set referenced by ``config.eval.dataset`` (or an override)."""
     dataset_path = resolve_path(path or load_config()["eval"]["dataset"])

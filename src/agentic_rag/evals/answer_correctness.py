@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from agentic_rag.config import load_config
-from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset
+from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset, eval_dataset_version
 from agentic_rag.evals.runs import eval_run_path, retrieval_config_snapshot
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.llm.provider import build_llm, role_model
@@ -142,8 +142,9 @@ def describe(result: QAResult) -> str:
     return result.verdict
 
 
-def run(save: bool = True, limit: Optional[int] = None) -> dict:
+def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] = None) -> dict:
     config = load_config()
+    version = eval_dataset_version(dataset)
 
     # Build everything ONCE and reuse across questions (the embedder/store/bm25 are
     # expensive to construct). Generator and judge are SEPARATE LLMs (different models —
@@ -156,7 +157,8 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
     judge_prompt = load_prompt(config, "judge_correctness")
     top_k = config["retrieval"]["top_k"]
 
-    questions = load_eval_dataset()
+    logger.info(f"eval dataset version: v{version}")
+    questions = load_eval_dataset(dataset)
     if limit is not None:
         questions = questions[:limit]
 
@@ -177,7 +179,7 @@ def run(save: bool = True, limit: Optional[int] = None) -> dict:
 
     summary = report(results, config)
     if save:
-        persist(summary, results, config)
+        persist(summary, results, config, version)
     return summary
 
 
@@ -267,9 +269,9 @@ def report(results: List[QAResult], config: dict) -> dict:
     }
 
 
-def persist(summary: dict, results: List[QAResult], config: dict) -> None:
-    """Write a run record to eval_runs/answer_correctness/<timestamp>.json (gitignored)."""
-    path = eval_run_path("answer_correctness")
+def persist(summary: dict, results: List[QAResult], config: dict, version: str) -> None:
+    """Write a run record to eval_runs/answer_correctness/v<version>/<timestamp>.json (gitignored)."""
+    path = eval_run_path("answer_correctness", version)
 
     per_question = []
     for r in results:
@@ -301,6 +303,7 @@ def persist(summary: dict, results: List[QAResult], config: dict) -> None:
     # Self-describing run record: the LLM roles + temperature/max_tokens that drove
     # generation and judging, plus the retrieval pipeline the answers were built on.
     run_config = {
+        "dataset_version": version,
         "generator_model": role_model(config, "generator"),
         "judge_model": role_model(config, "judge"),
         "temperature": config["llm"]["temperature"],
@@ -326,10 +329,12 @@ def main() -> None:
         pass
     parser = argparse.ArgumentParser(description="Score end-to-end answer correctness over the seed eval set.")
     parser.add_argument("--limit", type=int, default=None, help="Only score the first N questions (quick check).")
+    parser.add_argument("--dataset", default=None,
+                        help="Eval dataset YAML to score against (default: config eval.dataset).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     args = parser.parse_args()
     configure_run_logging("evals/answer_correctness")
-    run(save=not args.no_save, limit=args.limit)
+    run(save=not args.no_save, limit=args.limit, dataset=args.dataset)
 
 
 if __name__ == "__main__":

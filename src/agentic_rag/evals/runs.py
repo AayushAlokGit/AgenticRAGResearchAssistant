@@ -12,9 +12,14 @@ from pathlib import Path
 from agentic_rag.config import resolve_path
 
 
-def eval_run_path(metric: str) -> Path:
-    """Create ``eval_runs/<metric>/`` if needed and return a fresh timestamped json path."""
-    out_dir = resolve_path("./eval_runs") / metric
+def eval_run_path(metric: str, dataset_version: str) -> Path:
+    """Return a fresh timestamped json path under ``eval_runs/<metric>/v<version>/``.
+
+    The dataset version is a path segment so runs against different eval sets land in
+    separate folders — you can't accidentally diff a v2 run against a v3 run.
+    """
+    label = f"v{dataset_version}" if dataset_version else "vunknown"
+    out_dir = resolve_path("./eval_runs") / metric / label
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%d_%m_%Y_%H_%M_%S")
     return out_dir / f"{stamp}.json"
