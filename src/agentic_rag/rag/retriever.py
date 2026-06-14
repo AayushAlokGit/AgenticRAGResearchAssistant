@@ -123,106 +123,47 @@ def reciprocal_rank_fusion(dense_hits: List[Hit], sparse_hits: List[Hit], rrf_k:
     return fused_hits
 
 
-def _merge_index_ranges(ranges):
-    """Merge overlapping/adjacent [lo, hi] index ranges into contiguous ones."""
-    if not ranges:
-        return []
-    ordered = sorted(ranges)
-    merged = [list(ordered[0])]
-    for lo, hi in ordered[1:]:
-        last = merged[-1]
-        if lo <= last[1] + 1:          # overlapping OR directly adjacent -> one window
-            last[1] = max(last[1], hi)
-        else:
-            merged.append([lo, hi])
-    return merged
-
-
-def _join_with_overlap_trim(texts, max_overlap):
-    """Concatenate consecutive chunk texts, trimming the sliding-window overlap they share.
-
-    Fixed-size chunks overlap by ~chunk_overlap chars, so naive concatenation would
-    duplicate that seam. We find the largest suffix of the accumulated text that is also a
-    prefix of the next chunk (up to max_overlap) and drop it.
-    """
-    if not texts:
-        return ""
-    merged = texts[0]
-    for text in texts[1:]:
-        limit = min(len(merged), len(text), max_overlap)
-        k = limit
-        joined = False
-        while k > 0:
-            if merged[-k:] == text[:k]:
-                merged = merged + text[k:]
-                joined = True
-                break
-            k -= 1
-        if not joined:
-            merged = merged + " " + text
-    return merged
-
-
 class ParentExpansionRetriever:
-    """Small-to-big: retrieve precise child chunks, then expand each into its contiguous
-    neighbourhood (same source, ±window) merged into a 'parent' window for the generator.
+    """Small-to-big: retrieve precise child chunks, then return each with its contiguous
+    neighbours (same source, ±window) merged into one 'parent' window for the generator.
 
     Adds CONTIGUOUS, same-location context (the rest of a split table/section) WITHOUT
     pulling in separately-ranked chunks from elsewhere — so it raises coverage without
     raising the distractor count (the failure mode a bigger top_k hit). Wraps whatever it's
     given (typically the reranked retriever): retrieve+rank children, then expand.
+
+    Children arrive ranked, so we emit parents in that order and skip any chunk already
+    pulled into an earlier (better-ranked) parent — that single `seen` set replaces explicit
+    window-merging. Neighbour texts are just joined; consecutive chunks share their overlap
+    seam, so a parent has minor (~overlap) duplicated text — harmless, not worth de-duping.
     """
 
-    def __init__(self, base, store: ChromaVectorStore, window: int, max_overlap: int):
+    def __init__(self, base, store: ChromaVectorStore, window: int):
         self.base = base
         self.store = store
         self.window = window
-        self.max_overlap = max_overlap
         self.name = f"{base.name}+parent{window}"
 
     def query(self, text: str, k: int) -> List[Hit]:
         child_hits = self.base.query(text, k)
-        if not child_hits:
-            return []
-
-        # Collect each child's ±window range, grouped by source (with its score + center).
-        windows_by_source = {}
-        for hit in child_hits:
-            window = (hit.chunk_index - self.window, hit.chunk_index + self.window,
-                      hit.score, hit.chunk_index)
-            windows_by_source.setdefault(hit.source, []).append(window)
-
+        source_chunks = {}   # cache: source -> {index: text}, fetched once per source
+        seen = set()         # (source, index) already inside an emitted parent
         parents: List[Hit] = []
-        for source, windows in windows_by_source.items():
-            chunks = self.store.fetch_source_chunks(source)   # {index: text}
-            if not chunks:
-                continue
-            max_index = max(chunks)
+        for hit in child_hits:
+            if (hit.source, hit.chunk_index) in seen:
+                continue     # already absorbed by an earlier (better-ranked) parent
+            if hit.source not in source_chunks:
+                source_chunks[hit.source] = self.store.fetch_source_chunks(hit.source)
+            chunks = source_chunks[hit.source]
 
-            # Clamp each window to existing indices, then merge adjacent/overlapping ones.
-            clamped = []
-            for lo, hi, score, center in windows:
-                clamped.append((max(0, lo), min(max_index, hi)))
-            merged_ranges = _merge_index_ranges(clamped)
-
-            for lo, hi in merged_ranges:
-                # Stitch the contiguous chunk texts in this range into one parent window.
-                texts = []
-                for index in range(lo, hi + 1):
-                    if index in chunks:
-                        texts.append(chunks[index])
-                parent_text = _join_with_overlap_trim(texts, self.max_overlap)
-
-                # Carry the best child score in this range (for ranking parents) + its index.
-                best_score = None
-                rep_index = lo
-                for wlo, whi, score, center in windows:
-                    if lo <= center <= hi and (best_score is None or score > best_score):
-                        best_score = score
-                        rep_index = center
-                parents.append(Hit(source, rep_index, parent_text, best_score or 0.0))
-
-        parents.sort(key=lambda hit: hit.score, reverse=True)
+            # This chunk + the neighbours that actually exist, in document order. A missing
+            # index (out of range) simply isn't in `chunks`, so no clamping is needed.
+            texts = []
+            for index in range(hit.chunk_index - self.window, hit.chunk_index + self.window + 1):
+                if index in chunks:
+                    texts.append(chunks[index])
+                    seen.add((hit.source, index))
+            parents.append(Hit(hit.source, hit.chunk_index, "\n".join(texts), hit.score))
         return parents
 
 
@@ -283,8 +224,6 @@ def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[b
 
     if parent_on:
         # Stage 3 (optional): expand each retrieved child to its contiguous neighbours.
-        window = pe_cfg.get("window", 1)
-        max_overlap = config["ingestion"]["chunk_overlap"] + 100  # cover the seam + snap drift
-        base = ParentExpansionRetriever(base, store, window, max_overlap)
+        base = ParentExpansionRetriever(base, store, pe_cfg.get("window", 1))
 
     return base
