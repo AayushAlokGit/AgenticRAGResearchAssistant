@@ -5,33 +5,28 @@
 # is versioned so eval runs are reproducible and single changes can be A/B tested.
 
 llm:
-  # Groq-only for now (the available provider key) — see DD-004. Groq is LPU-based and
-  # very fast, which suits the change->measure->re-run-evals loop. Still kept
-  # router-shaped: provider_order is a list so adding tiers later is a one-line change.
-  provider_order: [groq] # later, when more keys exist: [groq, anthropic, ollama]
+  # Two providers now (DD-004 → multi-tier): Gemini (paid GOOGLE_API_KEY) + Groq (free).
+  # provider_order is the FALLBACK order for a role with no explicit provider; first = default.
+  # Gemini paid = high throughput + big context (escapes Groq's 6K-TPM per-request wall that
+  # broke the agent loop); Groq kept as a free fallback + the cross-family judge.
+  provider_order: [gemini, groq] # later, also: anthropic, ollama
   models:
-    groq: llama-3.3-70b-versatile # default model for the active provider (the generator)
-    anthropic: claude-sonnet-4-6 # reference only; unused until an Anthropic key exists
-    ollama: llama3.1 # reference only; unused until Ollama is set up
-  # Per-role model overrides (DD-013). A role with no entry falls back to models.<provider>.
-  # WHY split generator and judge onto different models:
-  #   1. Separate daily-token buckets — Groq meters TPD per-model, so the judge runs on its
-  #      OWN 200K/day quota (gpt-oss-120b) instead of eating the generator's 100K (70b).
-  #      Net: ~2x answer-correctness runs/day before hitting a wall.
-  #   2. Removes self-evaluation bias — a judge from a DIFFERENT model family can't rubber-
-  #      stamp its own generations (the caveat we documented for the single-model setup).
-  # gpt-oss-120b is a strong, different-family judge with the higher daily ceiling.
+    gemini: gemini-2.5-flash # Gemini default (fast, 1M context, high paid limits) — GOOGLE_API_KEY
+    groq: llama-3.3-70b-versatile # Groq default model
+  # Per-role provider+model (DD-013). Form: {provider, model} (explicit) or a bare model
+  # string (= that model on the default provider). WHY split generator and judge:
+  #   1. Removes self-evaluation bias — a judge from a DIFFERENT model FAMILY (gpt-oss, not
+  #      Gemini) can't rubber-stamp its own generations.
+  #   2. Right tool per role — Gemini's throughput/context for the heavy generation+agent
+  #      loop; Groq's free gpt-oss bucket for the cheap judging.
   roles:
-    # Fresh-bucket pair for the v3 baseline (scout/70b/gpt-oss-120b drained on 2026-06-14).
-    # 8b-instant generator + gpt-oss-20b judge: both untouched daily buckets, different
-    # families (no self-eval bias). NOTE: 8b is WEAKER than scout/70b, so this v3 baseline is
-    # its OWN anchor — the agentic-loop before/after runs must reuse THIS pair to stay a clean
-    # one-variable comparison. 6K TPM throttles the run (~slow), fine for a one-off baseline.
-    generator: llama-3.1-8b-instant # 500K TPD / 6K TPM
-    # generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
-    # generator: llama-3.3-70b-versatile # 100K TPD / 6K TPM
-    judge: openai/gpt-oss-20b # different family; own 200K TPD bucket (gpt-oss-120b drained)
-    # judge: openai/gpt-oss-120b # 200K TPD bucket
+    # Generator/agent on Gemini: paid key → no 6K-TPM wall, room for the agent's accumulated
+    # context. NOTE: this changes the eval ANCHOR (the .775/.850 baseline was 8b) — re-baseline
+    # naive-on-Gemini before reading any agentic A/B against it.
+    generator: {provider: gemini, model: gemini-2.5-flash-lite} # cheapest/fastest; flash / pro are stronger upgrades (eval-gated)
+    # generator: llama-3.1-8b-instant     # (Groq fallback options, bare-string = default provider)
+    # generator: meta-llama/llama-4-scout-17b-16e-instruct
+    judge: {provider: groq, model: openai/gpt-oss-120b} # different family → no self-eval bias
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   # The Groq SDK retries 429/5xx/timeout/connection errors with exponential backoff +
@@ -69,6 +64,23 @@ retrieval:
     # recall unchanged) — ON (DD-020).
     enabled: true
     window: 1
+
+agent:
+  # Module 2: when enabled, the answer path becomes a retrieve->reason->retrieve LOOP (the
+  # model reformulates queries and decides when it has enough) instead of one fixed retrieval.
+  # OFF by default — the naive single-shot is the BASELINE we A/B against. Flip to true to
+  # measure the loop on the same 8b/20b anchor; it must beat correctness .775 / faithfulness
+  # .850 to earn its place (else revert, like recursive chunking did — EXPERIMENTS.md).
+  enabled: false
+  max_rounds: 3 # hard budget: max search rounds before a forced answer (the circuit breaker)
+  # Context compaction (a thin slice of Module 3): the final-answer prompt is trimmed to this
+  # many characters of gathered evidence so it fits the model's per-request token ceiling.
+  # ~16000 chars ≈ 4K tokens of evidence; with the prompt + question + completion that lands
+  # safely under the 6K-TPM small-model wall that 413'd the unbounded loop, while leaving room
+  # for a multi-hop answer to keep evidence from several searches (10000 was too tight — it
+  # trimmed away later-search hits the agent had deliberately gone to fetch). Starting guess;
+  # the right value is eval-tuned. Raise it further on a higher-TPM model (scout, 70b).
+  answer_char_budget: 16000
 
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
