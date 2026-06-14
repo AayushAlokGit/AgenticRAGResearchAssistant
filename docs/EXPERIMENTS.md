@@ -4,7 +4,9 @@ Terse record of eval-gated A/Bs: the change, the result, keep/revert, the one-li
 Full rationale lives in `DESIGN_DECISIONS.md` (DD refs). Newest last.
 
 **Meters:** retrieval recall@{1,3,5}+MRR (deterministic, free) · answer-correctness end-to-end
-(LLM-judge, non-deterministic — ~1-question run-to-run noise; look for movement, not deltas).
+(LLM-judge vs reference, non-deterministic — ~1-question run-to-run noise; look for movement, not deltas)
+· faithfulness = SUPPORTED/answered (LLM-judge, **reference-free** — grounding not correctness) + a
+deterministic cited-source-in-context check (catches citation hallucination, free).
 
 | # | Experiment | Result | Verdict | Lesson |
 |---|---|---|---|---|
@@ -18,6 +20,8 @@ Full rationale lives in `DESIGN_DECISIONS.md` (DD refs). Newest last.
 
 **Champion config:** hybrid + rerank + **parent-expansion (window=1)**, fixed chunking 800/100, top_k=5 → end-to-end ≈**0.76**.
 
+**v3 pre-agentic baseline** (gen `llama-3.1-8b-instant`, judge `gpt-oss-20b` — the matched anchor for the agentic before/after): correctness **31/40 = .775** · faithfulness **34/40 = .850** (0 UNSUPPORTED, 0 citation-halluc). Cross-tab payoff: 4 answers were CORRECT yet only PARTIALLY_SUPPORTED (q04/q08/q30/q39 — right answer, ungrounded detail; the cell correctness is blind to), and **every** correctness miss was SUPPORTED → those misses are retrieval/coverage gaps, not hallucination.
+
 **Recurring themes:** (a) measure everything — "obviously better" techniques (recursive, bigger top_k, relevance gate) all *lost*; (b) document-level recall overstates fact-level answerability; (c) relevance (embedder, reranker, gate) ≠ answerhood/truth; (d) uncalibrated scores aren't portable (→ RRF uses ranks; gate uses relative margin).
 
-**Open levers (untested):** parent window=2; cross-*document* completeness (q27-style — parent-expansion is same-source only); stronger embedder; faithfulness eval; the agentic loop.
+**Open levers (untested):** parent window=2; cross-*document* completeness (q27-style — parent-expansion is same-source only); stronger embedder; the agentic loop (next).

@@ -22,10 +22,16 @@ llm:
   #      stamp its own generations (the caveat we documented for the single-model setup).
   # gpt-oss-120b is a strong, different-family judge with the higher daily ceiling.
   roles:
-    # scout for v3 evals — 500K TPD headroom avoids the 70b daily wall on the larger set.
-    generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
+    # Fresh-bucket pair for the v3 baseline (scout/70b/gpt-oss-120b drained on 2026-06-14).
+    # 8b-instant generator + gpt-oss-20b judge: both untouched daily buckets, different
+    # families (no self-eval bias). NOTE: 8b is WEAKER than scout/70b, so this v3 baseline is
+    # its OWN anchor — the agentic-loop before/after runs must reuse THIS pair to stay a clean
+    # one-variable comparison. 6K TPM throttles the run (~slow), fine for a one-off baseline.
+    generator: llama-3.1-8b-instant # 500K TPD / 6K TPM
+    # generator: meta-llama/llama-4-scout-17b-16e-instruct # 500K TPD / 30K TPM
     # generator: llama-3.3-70b-versatile # 100K TPD / 6K TPM
-    judge: openai/gpt-oss-120b # different family + own 200K TPD bucket
+    judge: openai/gpt-oss-20b # different family; own 200K TPD bucket (gpt-oss-120b drained)
+    # judge: openai/gpt-oss-120b # 200K TPD bucket
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   # The Groq SDK retries 429/5xx/timeout/connection errors with exponential backoff +
