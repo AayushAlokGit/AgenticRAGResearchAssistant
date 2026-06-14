@@ -75,7 +75,7 @@ ingestion:
   # so a git checkout doesn't trigger needless re-embedding. Lives next to the store.
   tracking_file: ./chromadb_data/processed_files.json
   # Chunking is an INGESTION-time operation (only ingest.py consumes these; the retriever
-  # never sees them), so it lives here, not under retrieval (DD-020).
+  # never sees them), so it lives here, not under retrieval.
   chunk_size: 800 # characters; naive fixed-size chunking to start
   chunk_overlap: 100
   chunking:
