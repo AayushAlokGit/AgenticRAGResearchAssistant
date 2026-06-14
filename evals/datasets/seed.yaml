@@ -406,3 +406,129 @@ questions:
     should_abstain: false
     expected_answer: "A file is marked processed only AFTER a successful upload, so the tracker's state stays consistent with the search index (failed uploads are not marked, and are retried on the next run)."
     notes: "The 'mark processed only after successful upload' fact appears in the engineering-analysis doc and the Azure arch doc's file-tracking section, so match:any. Probes atomic-success-tracking understanding."
+
+  # ═══════════════════════════════════════════════════════════════════════════════════
+  # v3 additions (q33–q43) — cover the THREE new RAG-concept docs (CHUNKING.md,
+  # RERANKING.md, VECTOR_DB_INTERNALS.md). These docs describe RAG techniques in general
+  # AND this project's own pipeline. Every question is scoped to be unambiguous: it asks
+  # about a general technique OR about this project's pipeline (the new docs) — never in a
+  # way that collides with the MCP-server docs (see the two-system disambiguation note in
+  # the header). Questions are phrased in natural language, NOT verbatim doc wording, to
+  # stress semantic retrieval. Every expected_sources entry was confirmed by reading the doc.
+  # ═══════════════════════════════════════════════════════════════════════════════════
+
+  # ── Coverage: CHUNKING.md ───────────────────────────────────────────────────────
+  - id: q33
+    type: factual
+    question: "In recursive text splitting, what is the order of separators the splitter tries, from largest natural break down to the smallest fallback?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Paragraph (blank line, \\n\\n) → line (\\n) → sentence → word → character, taking the largest natural break that still fits the size cap."
+    notes: "The recursive separator hierarchy is described only in CHUNKING.md (Family B1). General-technique question, no system ambiguity. Concrete ordered fact."
+
+  - id: q34
+    type: factual
+    question: "Why should a chunking pipeline keep format-specific parsing (for PDFs, HTML, docx) separate from the chunker itself?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Format-specificity belongs in an extraction layer that turns any file into normalized plain text; the chunker then sees only plain text and splits on universal paragraph/sentence boundaries, so one format-agnostic chunking strategy serves every document type and format knowledge stays quarantined."
+    notes: "The extraction-vs-chunking separation principle is unique to CHUNKING.md §3/§7. General design-principle question; no collision with the MCP-server docs."
+
+  - id: q35
+    type: factual
+    question: "What is the parent-child (small-to-big) chunking idea, and which problem does it solve?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Index small child chunks for precise retrieval, but on a hit hand the larger surrounding parent section to the generator for rich context. It resolves the small-vs-large tension (precise retrieval vs complete context) and is the highest-leverage fix for multi-fact / coverage gaps."
+    notes: "Parent-child / small-to-big (Family D1) is described only in CHUNKING.md. General-technique question. Targets the §2 precision-vs-context tension it addresses."
+
+  # ── Coverage: VECTOR_DB_INTERNALS.md ────────────────────────────────────────────
+  - id: q36
+    type: factual
+    question: "What does HNSW stand for, and what two structural ideas does it combine to navigate the vector space quickly?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "Hierarchical Navigable Small World. It combines (1) a small-world graph — each node links to ~M nearest neighbors plus a few long-range links, giving ~O(log N) greedy hops toward the query — and (2) a hierarchy / skip-list of stacked layers (a sparse 'highway' on top, all nodes at the bottom) searched coarse-to-fine."
+    notes: "HNSW expansion + its two structural ideas are explained only in VECTOR_DB_INTERNALS.md §6. NOTE distractor pressure: the MCP-server ChromaDB doc (02-Architecture) also says 'HNSW', but only the new doc expands the acronym and the small-world+hierarchy structure. Asked as a general-concept question."
+
+  - id: q37
+    type: factual
+    question: "A vector index minimizes a distance, but cosine similarity is bigger-is-closer. How is cosine stored as a distance so that 'nearest' means 'smallest', and how do you convert it back to similarity?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "Store cosine distance = 1 − cosine similarity (range 0…2), so smaller distance = closer; convert back with similarity = 1 − distance."
+    notes: "The cosine-distance = 1 − cosine-similarity bookkeeping is unique to VECTOR_DB_INTERNALS.md §4. Concrete formula. General-concept framing."
+
+  - id: q38
+    type: factual
+    question: "For embedding-based text retrieval, why is cosine similarity preferred over plain dot product or Euclidean distance?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "Because a vector's magnitude tracks incidental things (text length, emphasis) rather than meaning, while its direction encodes what the text is about. Cosine measures the angle only (length divided out), so it compares meaning; dot product mixes in length and L2 mixes in magnitude differences."
+    notes: "The 'why cosine for text' rationale is unique to VECTOR_DB_INTERNALS.md §2. General-concept question; no system ambiguity."
+
+  # ── Coverage: RERANKING.md ──────────────────────────────────────────────────────
+  - id: q39
+    type: factual
+    question: "Beyond cross-encoders, what are the other two families of reranking models, and is each one pointwise or listwise?"
+    match: any
+    expected_sources:
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "Cross-encoders (neural, pointwise — score each query-item pair alone); Learning-to-Rank models such as LambdaMART (gradient-boosted trees over features like BM25 score, recency, popularity, click-through); and LLM rerankers such as RankGPT (listwise — prompt an LLM to order the whole set). Pointwise scores each item alone; listwise ranks the set together (enabling diversity)."
+    notes: "The three reranker families + pointwise-vs-listwise axis are in RERANKING.md §7. General-concept question. Concrete: names LambdaMART and the pointwise/listwise split."
+
+  - id: q40
+    type: factual
+    question: "A cross-encoder reranker outputs a single relevance score. Does a high score mean the passage is factually correct or that the final answer will be grounded?"
+    match: any
+    expected_sources:
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "No. The reranker scores topical/semantic relevance (learned from a labeled ranking dataset like MS MARCO) — 'is this passage a good match for the query', not whether its claims are true or the answer is grounded. A confidently-written but wrong passage can still score high; answer correctness and faithfulness are judged by separate answer-layer evals."
+    notes: "The relevance-not-correctness/answerability boundary is unique to RERANKING.md §3. Probes a subtle conceptual distinction; general framing, no system collision."
+
+  # ── Multi-hop across the new docs ───────────────────────────────────────────────
+  - id: q41
+    type: multi_hop
+    question: "Stage-1 retrieval uses an approximate-nearest-neighbour index to fetch candidates quickly, and a reranker then rescores them. Which ANN index structure does the first stage rely on, and why could the second-stage cross-encoder never be used as that index instead?"
+    match: all
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "Stage 1 relies on an HNSW (Hierarchical Navigable Small World) index — a hierarchical small-world graph navigated coarse-to-fine to approximate nearest neighbours over precomputed vectors. A cross-encoder can't serve as that index because it scores each (query, item) pair with a single joint forward pass that depends on the query, so there is nothing to precompute or store ahead of time — you would have to run it against every item at query time, which is impossible at index scale."
+    notes: "Genuine multi-hop (rewritten in v3 — the prior version was answerable from RERANKING.md alone). HNSW lives ONLY in VECTOR_DB_INTERNALS.md (§6); the cross-encoder's query-dependent, non-indexable scoring lives ONLY in RERANKING.md (§2-3). Each doc holds a NECESSARY half, so match:all is justified — neither doc alone answers both parts."
+
+  - id: q42
+    type: multi_hop
+    question: "This project's planned fix for facts split across chunk boundaries is parent-child (small-to-big) chunking. What does that strategy do? And separately, what does a cross-encoder reranker compute over a (query, chunk) pair that the first-stage vector retriever cannot?"
+    match: all
+    expected_sources:
+      - CHUNKING.md
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "Parent-child (small-to-big) chunking indexes small CHILD chunks for precise retrieval, but on a hit hands the larger surrounding PARENT section to the generator — combining precise matching with rich context. The cross-encoder reranker concatenates the (query, chunk) pair and runs one joint forward pass so every query token can attend to every chunk token (cross-attention), scoring their interaction directly — something the first-stage bi-encoder vector retriever can't do, because it encodes the query and chunk separately into fixed vectors before they ever meet."
+    notes: "Genuine multi-hop (rewritten in v3 — the prior version was answerable from RERANKING.md §6 alone). Parent-child / small-to-big chunking lives ONLY in CHUNKING.md (§4 D1, §8); the cross-encoder's joint cross-attention over the pair lives ONLY in RERANKING.md (§2). Each doc holds a NECESSARY half, so match:all is justified."
+
+  # ── Replacement abstention (keeps 3 abstention cases after q11 was reconciled) ──
+  - id: q43
+    type: abstention
+    question: "What numeric values do the HNSW index knobs M and ef_search use in this project's vector store configuration?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. VECTOR_DB_INTERNALS.md explains what the HNSW knobs M, ef_construction, and ef_search do qualitatively, but gives no specific numeric values for this project's configuration."
+    notes: "ADDED in v3 to replace q11's lost abstention case. VECTOR_DB_INTERNALS.md §6 names the HNSW knobs (M, ef_construction, ef_search) and describes them ONLY qualitatively — no numeric defaults appear anywhere in the full corpus (verified: the only numeric vector-store figures are 384 dims, 262 chunks, range 0…2; no M/ef value). Plausible-but-absent specific config; the qualitative knob discussion tempts fabrication."
