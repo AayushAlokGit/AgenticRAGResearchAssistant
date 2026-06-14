@@ -47,10 +47,10 @@ from typing import List, Optional
 
 from agentic_rag.config import load_config
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset, eval_dataset_version
-from agentic_rag.evals.runs import agent_config_snapshot, eval_run_path, retrieval_config_snapshot
+from agentic_rag.evals.runs import agent_config_snapshot, eval_run_path, retrieval_config_snapshot, usage_record
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.agent.loop import build_answerer
-from agentic_rag.llm.provider import build_llm, role_model
+from agentic_rag.llm.provider import Usage, build_llm, role_model
 from agentic_rag.rag.answer import load_prompt
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
@@ -73,6 +73,8 @@ class QAResult:
     verdict: Optional[str]      # CORRECT/PARTIALLY_CORRECT/INCORRECT, or None if not judged
     judge_reason: str = ""
     retrieved: List[Hit] = field(default_factory=list)   # chunks fed to the generator, for diagnosis
+    gen_usage: Usage = field(default_factory=Usage)      # generator token cost (the system cost)
+    judge_usage: Usage = field(default_factory=Usage)    # judge token cost (the instrument cost)
 
 
 def is_abstention(answer: str) -> bool:
@@ -109,6 +111,8 @@ def judge_correctness(llm, judge_prompt: str, question: str, reference: str, can
     An empty/off-format judge response is a measurement error, not a verdict, and most are
     transient — so we re-ask up to JUDGE_MAX_ATTEMPTS. If every attempt fails to parse, we
     return UNGRADED and let report() exclude it from the rate (rather than scoring INCORRECT).
+
+    Returns (verdict, raw_text, usage) — usage sums every attempt (a re-ask still cost tokens).
     """
     user_message = (
         f"QUESTION:\n{question}\n\n"
@@ -121,17 +125,18 @@ def judge_correctness(llm, judge_prompt: str, question: str, reference: str, can
     ]
 
     last_raw = ""
+    usage = Usage()
     for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
-        raw = llm.complete(messages)
-        if raw is None:        # provider can return None content on an empty completion
-            raw = ""
+        completion = llm.complete(messages)
+        usage = usage + completion.usage
+        raw = completion.text or ""   # provider can return empty text on an empty completion
         last_raw = raw.strip()
         verdict = parse_verdict(raw)
         if verdict != UNGRADED:
-            return verdict, last_raw
+            return verdict, last_raw, usage
         logger.warning("judge returned no parseable verdict (attempt %d/%d): %r",
                        attempt, JUDGE_MAX_ATTEMPTS, last_raw[:80])
-    return UNGRADED, last_raw
+    return UNGRADED, last_raw, usage
 
 
 def describe(result: QAResult) -> str:
@@ -179,10 +184,12 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] =
 
         verdict = None
         reason = ""
+        judge_usage = Usage()
         if not q.should_abstain and not abstained:
-            verdict, reason = judge_correctness(judge_llm, judge_prompt, q.question, q.expected_answer, generated.answer)
+            verdict, reason, judge_usage = judge_correctness(judge_llm, judge_prompt, q.question, q.expected_answer, generated.answer)
 
-        result = QAResult(q, generated.answer, abstained, verdict, reason, generated.retrieved)
+        result = QAResult(q, generated.answer, abstained, verdict, reason, generated.retrieved,
+                          gen_usage=generated.usage, judge_usage=judge_usage)
         results.append(result)
         logger.info(f"  [{i:2d}/{len(questions)}] {q.id} {q.type:<10} {describe(result)}")
 
@@ -261,6 +268,16 @@ def report(results: List[QAResult], config: dict) -> dict:
     logger.info(f"    end-to-end success (answered AND correct): {len(correct)}/{n_graded} = {end_to_end:.3f}   [excludes {len(ungraded)} ungraded]")
     logger.info(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
 
+    # Cost axis (kept separate from quality): generator = system cost, judge = instrument cost.
+    gen_total = Usage()
+    judge_total = Usage()
+    for r in results:
+        gen_total = gen_total + r.gen_usage
+        judge_total = judge_total + r.judge_usage
+    n = len(results) or 1
+    logger.info(f"  cost (tokens): generator {gen_total.total_tokens} in {gen_total.calls} call(s) "
+                f"(~{gen_total.calls / n:.1f} calls/Q) | judge {judge_total.total_tokens} [instrument]")
+
     return {
         "generator_model": generator_model,
         "judge_model": judge_model,
@@ -282,8 +299,12 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
     """Write a run record to eval_runs/answer_correctness/v<version>/<timestamp>.json (gitignored)."""
     path = eval_run_path("answer_correctness", version)
 
+    gen_total = Usage()
+    judge_total = Usage()
     per_question = []
     for r in results:
+        gen_total = gen_total + r.gen_usage
+        judge_total = judge_total + r.judge_usage
         # Record the retrieved chunks (source + text) so a run can be diagnosed offline:
         # for a failure, read the actual passages the generator saw and decide whether the
         # needed fact was even present (retrieval problem) or was present but the answer
@@ -306,6 +327,7 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
             "expected_answer": r.q.expected_answer,
             "expected_sources": r.q.expected_sources,
             "judge_reason": r.judge_reason,
+            "usage": usage_record(r.gen_usage, r.judge_usage),
             "retrieved": retrieved,
         })
 
@@ -326,6 +348,7 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
         "metric": "answer_correctness",
         "config": run_config,
         "summary": summary,
+        "usage": usage_record(gen_total, judge_total),  # run-level token cost (system vs instrument)
         "per_question": per_question,
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")

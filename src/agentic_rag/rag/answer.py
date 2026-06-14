@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from agentic_rag.config import load_config, resolve_path
-from agentic_rag.llm.provider import build_llm
+from agentic_rag.llm.provider import Usage, build_llm
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
 
@@ -33,7 +33,9 @@ from agentic_rag.rag.vector_store import Hit
 class AnswerResult:
     question: str
     answer: str
-    retrieved: List[Hit]   # the chunks fed to the model, best-first
+    retrieved: List[Hit]              # the chunks fed to the model, best-first
+    usage: Usage = field(default_factory=Usage)  # generator token cost to produce this answer
+                                                  # (agent loop: controller calls + final answer)
 
 
 def load_prompt(config: dict, name: str) -> str:
@@ -70,11 +72,12 @@ def generate_answer(question: str, retriever, llm, system_prompt: str, top_k: in
     user_message = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
 
     # 3. Generate.
-    answer = llm.complete([
+    completion = llm.complete([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ])
-    return AnswerResult(question=question, answer=answer, retrieved=hits)
+    return AnswerResult(question=question, answer=completion.text or "",
+                        retrieved=hits, usage=completion.usage)
 
 
 def answer_question(question: str, config: Optional[dict] = None) -> AnswerResult:

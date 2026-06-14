@@ -36,9 +36,10 @@ import json
 import logging
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
+from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.answer import AnswerResult, assemble_context, generate_answer, load_prompt
 from agentic_rag.rag.vector_store import Hit
 
@@ -71,6 +72,8 @@ class Decision:
     thought: str
     action: str          # "search" | "finish"
     query: str = ""
+    usage: Usage = field(default_factory=Usage)  # controller token cost to reach this decision
+                                                  # (sums the retry attempts, if any)
 
 
 # ───────────────────────────── the controller (part 2) ─────────────────────────────
@@ -92,16 +95,22 @@ def decide_next_action(llm, react_prompt: str, question: str, scratchpad: List[H
     logger.debug("agent controller: prompt=%d chars over %d evidence chunk(s), %d round(s) left",
                  len(user_message), len(scratchpad), rounds_left)
 
+    # Sum the cost of every controller attempt (a retry on unparseable output still cost
+    # tokens) so the returned Decision carries the true price of reaching it.
+    usage = Usage()
     for attempt in range(1, CONTROLLER_MAX_ATTEMPTS + 1):
-        raw = llm.complete(messages) or ""
+        completion = llm.complete(messages)
+        usage = usage + completion.usage
+        raw = completion.text or ""
         logger.debug("agent controller raw (attempt %d/%d): %r",
                      attempt, CONTROLLER_MAX_ATTEMPTS, raw.strip()[:300])
         decision = parse_action(raw)
         if decision is not None:
+            decision.usage = usage
             return decision
         logger.warning("agent controller: unparseable action (attempt %d/%d): %r",
                        attempt, CONTROLLER_MAX_ATTEMPTS, raw.strip()[:120])
-    return Decision(thought="(controller output unparseable; finishing)", action="finish")
+    return Decision(thought="(controller output unparseable; finishing)", action="finish", usage=usage)
 
 
 def build_controller_prompt(question: str, scratchpad: List[Hit], steps: List[AgentStep],
@@ -176,6 +185,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     seen = set()                 # (source, chunk_index) already in the scratchpad
     steps: List[AgentStep] = []
     exit_reason = "budget"       # default: the for-loop ran out of rounds without a FINISH
+    controller_usage = Usage()   # token cost of all the controller (reasoning) calls
 
     for round_index in range(max_rounds):
         rounds_left = max_rounds - round_index
@@ -183,6 +193,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
                     round_index + 1, max_rounds, len(scratchpad))
 
         decision = decide_next_action(llm, react_prompt, question, scratchpad, steps, rounds_left)
+        controller_usage = controller_usage + decision.usage
         logger.info("agent: think: %s", decision.thought or "(no thought given)")
 
         if decision.action == "finish":
@@ -226,9 +237,13 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         logger.info("agent: empty scratchpad — falling back to a single naive retrieval")
         result = generate_answer(question, retriever, llm, answer_prompt, top_k)
 
+    # Total generator cost of this question = all the controller reasoning calls + the final
+    # answer call. This is what makes "cost of agency" visible per question (naive=1 call).
+    result.usage = controller_usage + result.usage
     preview = result.answer.strip().replace("\n", " ")[:100]
-    logger.info("agent: answer ready — %d char(s) from %d chunk(s): %s",
-                len(result.answer), len(result.retrieved), preview)
+    logger.info("agent: answer ready — %d char(s) from %d chunk(s), %d LLM call(s)/%d tokens: %s",
+                len(result.answer), len(result.retrieved), result.usage.calls,
+                result.usage.total_tokens, preview)
     return result
 
 
@@ -275,11 +290,12 @@ def generate_from_scratchpad(question: str, scratchpad: List[Hit], llm, answer_p
     # DEBUG (file only): the final-answer prompt is the OTHER place that must fit the model's
     # per-request ceiling — select_within_budget keeps it bounded, this lets you watch it.
     logger.debug("agent answer: prompt=%d chars over %d chunk(s)", len(user_message), len(scratchpad))
-    answer = llm.complete([
+    completion = llm.complete([
         {"role": "system", "content": answer_prompt},
         {"role": "user", "content": user_message},
-    ]) or ""
-    return AnswerResult(question=question, answer=answer, retrieved=scratchpad)
+    ])
+    return AnswerResult(question=question, answer=completion.text or "",
+                        retrieved=scratchpad, usage=completion.usage)
 
 
 # ───────────────────── the naive/agentic switch used by the evals ─────────────────────

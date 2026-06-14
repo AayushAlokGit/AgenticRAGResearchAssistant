@@ -51,10 +51,10 @@ from typing import List, Optional
 from agentic_rag.config import load_config
 from agentic_rag.evals.answer_correctness import is_abstention, UNGRADED, JUDGE_MAX_ATTEMPTS
 from agentic_rag.evals.dataset import EvalQuestion, load_eval_dataset, eval_dataset_version
-from agentic_rag.evals.runs import agent_config_snapshot, eval_run_path, retrieval_config_snapshot
+from agentic_rag.evals.runs import agent_config_snapshot, eval_run_path, retrieval_config_snapshot, usage_record
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.agent.loop import build_answerer
-from agentic_rag.llm.provider import build_llm, role_model
+from agentic_rag.llm.provider import Usage, build_llm, role_model
 from agentic_rag.rag.answer import assemble_context, load_prompt
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
@@ -77,6 +77,8 @@ class FaithResult:
     cited_sources: List[str] = field(default_factory=list)        # filenames the answer cited
     unsupported_citations: List[str] = field(default_factory=list)  # cited but NOT retrieved
     retrieved: List[Hit] = field(default_factory=list)            # chunks fed to the generator, for diagnosis
+    gen_usage: Usage = field(default_factory=Usage)              # generator token cost (system cost)
+    judge_usage: Usage = field(default_factory=Usage)            # judge token cost (instrument cost)
 
 
 # ───────────────────────────── the LLM judge (reference-free) ─────────────────────────────
@@ -109,6 +111,8 @@ def judge_faithfulness(llm, judge_prompt: str, question: str, context: str, cand
     The judge sees the QUESTION (for relevance), the retrieved CONTEXT (the only ground
     truth it may use), and the CANDIDATE answer — but NO reference answer. That's what makes
     this reference-free and runnable where no gold answer exists.
+
+    Returns (verdict, raw_text, usage) — usage sums every attempt (a re-ask still cost tokens).
     """
     user_message = (
         f"QUESTION:\n{question}\n\n"
@@ -121,17 +125,18 @@ def judge_faithfulness(llm, judge_prompt: str, question: str, context: str, cand
     ]
 
     last_raw = ""
+    usage = Usage()
     for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
-        raw = llm.complete(messages)
-        if raw is None:        # provider can return None content on an empty completion
-            raw = ""
+        completion = llm.complete(messages)
+        usage = usage + completion.usage
+        raw = completion.text or ""   # provider can return empty text on an empty completion
         last_raw = raw.strip()
         verdict = parse_faithfulness(raw)
         if verdict != UNGRADED:
-            return verdict, last_raw
+            return verdict, last_raw, usage
         logger.warning("faithfulness judge returned no parseable verdict (attempt %d/%d): %r",
                        attempt, JUDGE_MAX_ATTEMPTS, last_raw[:80])
-    return UNGRADED, last_raw
+    return UNGRADED, last_raw, usage
 
 
 # ───────────────────────── the deterministic citation check ─────────────────────────
@@ -211,13 +216,15 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] =
         reason = ""
         cited: List[str] = []
         unsupported: List[str] = []
+        judge_usage = Usage()
         if not abstained:
             # Judge groundedness against the EXACT context the generator saw.
             context = assemble_context(generated.retrieved)
-            verdict, reason = judge_faithfulness(judge_llm, judge_prompt, q.question, context, generated.answer)
+            verdict, reason, judge_usage = judge_faithfulness(judge_llm, judge_prompt, q.question, context, generated.answer)
             cited, unsupported = check_citations(generated.answer, generated.retrieved)
 
-        result = FaithResult(q, generated.answer, abstained, verdict, reason, cited, unsupported, generated.retrieved)
+        result = FaithResult(q, generated.answer, abstained, verdict, reason, cited, unsupported,
+                             generated.retrieved, gen_usage=generated.usage, judge_usage=judge_usage)
         results.append(result)
         status = "abstained (skipped)" if abstained else verdict
         cite_flag = f"  CITE-HALLUC: {', '.join(unsupported)}" if unsupported else ""
@@ -281,6 +288,16 @@ def report(results: List[FaithResult], config: dict) -> dict:
     logger.info(f"    faithfulness (fully SUPPORTED): {len(supported)}/{n_graded} = {faithfulness:.3f}   [excludes {len(ungraded)} ungraded]")
     logger.info(f"    citation hallucinations (cited a non-retrieved source): {len(citation_hallucinations)}/{n_judged}")
 
+    # Cost axis (kept separate from quality): generator = system cost, judge = instrument cost.
+    gen_total = Usage()
+    judge_total = Usage()
+    for r in results:
+        gen_total = gen_total + r.gen_usage
+        judge_total = judge_total + r.judge_usage
+    n = len(results) or 1
+    logger.info(f"  cost (tokens): generator {gen_total.total_tokens} in {gen_total.calls} call(s) "
+                f"(~{gen_total.calls / n:.1f} calls/Q) | judge {judge_total.total_tokens} [instrument]")
+
     return {
         "generator_model": generator_model,
         "judge_model": judge_model,
@@ -300,8 +317,12 @@ def persist(summary: dict, results: List[FaithResult], config: dict, version: st
     """Write a run record to eval_runs/faithfulness/v<version>/<timestamp>.json (gitignored)."""
     path = eval_run_path("faithfulness", version)
 
+    gen_total = Usage()
+    judge_total = Usage()
     per_question = []
     for r in results:
+        gen_total = gen_total + r.gen_usage
+        judge_total = judge_total + r.judge_usage
         # The retrieved chunks (source + text) ARE the ground truth the judge ruled against,
         # so record them: an UNSUPPORTED verdict can be re-checked offline by reading the
         # exact passages and seeing whether the disputed claim was really absent.
@@ -323,6 +344,7 @@ def persist(summary: dict, results: List[FaithResult], config: dict, version: st
             "cited_sources": r.cited_sources,
             "unsupported_citations": r.unsupported_citations,
             "expected_sources": r.q.expected_sources,
+            "usage": usage_record(r.gen_usage, r.judge_usage),
             "retrieved": retrieved,
         })
 
@@ -341,6 +363,7 @@ def persist(summary: dict, results: List[FaithResult], config: dict, version: st
         "metric": "faithfulness",
         "config": run_config,
         "summary": summary,
+        "usage": usage_record(gen_total, judge_total),  # run-level token cost (system vs instrument)
         "per_question": per_question,
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")

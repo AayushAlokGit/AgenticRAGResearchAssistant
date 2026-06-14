@@ -10,6 +10,22 @@ from datetime import datetime
 from pathlib import Path
 
 from agentic_rag.config import resolve_path
+from agentic_rag.llm.provider import Usage
+
+
+def usage_record(generator: Usage, judge: Usage) -> dict:
+    """Shape per-run token usage for the eval JSON, kept in two SEPARATE buckets on purpose.
+
+    ``generator`` is SYSTEM cost — the tokens you'd actually pay for in production. ``judge``
+    is INSTRUMENT cost — the cost of *measuring*, which has no production counterpart (nobody
+    runs the judge when you ship). We deliberately do NOT sum them into one number: a combined
+    "tokens per run" would roughly double the apparent $/query and mislead the cost trade-off.
+    Tokens (not dollars) because a count is provider-neutral; dollars need a drifting price table.
+    """
+    return {
+        "generator": generator.as_dict(),  # production cost
+        "judge": judge.as_dict(),          # measurement cost (no production counterpart)
+    }
 
 
 def eval_run_path(metric: str, dataset_version: str) -> Path:
