@@ -183,7 +183,7 @@ def run(save: bool = True, mode: Optional[str] = None, rerank: Optional[bool] = 
 
 def report(results: List[QuestionResult], mode: str, config: dict) -> dict:
     logger.info(f"\n=== Retrieval Recall (mode={mode}, max chunks {max(K_VALUES)}) ===")
-    logger.info(f"embedding={config['embedding']['model']}  chunk={config['retrieval']['chunk_size']}/{config['retrieval']['chunk_overlap']}\n")
+    logger.info(f"embedding={config['embedding']['model']}  chunk={config['ingestion']['chunk_size']}/{config['ingestion']['chunk_overlap']}\n")
 
     logger.info(f"QUESTIONS ({len(results)})   rank = position of first expected-source chunk")
     for r in results:

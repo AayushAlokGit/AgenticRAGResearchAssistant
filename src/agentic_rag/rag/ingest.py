@@ -52,9 +52,10 @@ def discover_markdown(corpus_root: Path) -> List[Path]:
 def ingest(force: bool = False) -> None:
     config = load_config()
     corpus_root = resolve_path(config["corpus"]["root"])
-    chunk_size = config["retrieval"]["chunk_size"]
-    overlap = config["retrieval"]["chunk_overlap"]
-    strategy = config["retrieval"].get("chunking", {}).get("strategy", "fixed")
+    ingestion_cfg = config["ingestion"]
+    chunk_size = ingestion_cfg["chunk_size"]
+    overlap = ingestion_cfg["chunk_overlap"]
+    strategy = ingestion_cfg.get("chunking", {}).get("strategy", "fixed")
     vs_cfg = config["vector_store"]
 
     store = ChromaVectorStore(resolve_path(vs_cfg["path"]), vs_cfg["collection"])

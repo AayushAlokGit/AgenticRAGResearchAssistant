@@ -41,13 +41,6 @@ embedding:
   model: sentence-transformers/all-MiniLM-L6-v2 # local, CPU-friendly baseline
 
 retrieval:
-  chunk_size: 800 # characters; naive fixed-size chunking to start
-  chunk_overlap: 100
-  chunking:
-    # fixed = naive sliding window (A1); recursive = format-agnostic, boundary-respecting
-    # split (B1: paragraph>line>sentence>word>char). recursive LOST the A/B at this
-    # chunk_size (regressed multi_hop recall + 3 false abstentions) — kept fixed (DD-017).
-    strategy: fixed
   top_k: 5 # chunks returned per query (8 lost the A/B — distractors hurt; 5 is the champion, DD-017)
   mode: hybrid # dense | hybrid — hybrid won the A/B (recall@1 +0.10, MRR +0.06), now default (DD-009)
   hybrid:
@@ -61,6 +54,11 @@ retrieval:
     enabled: true
     model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local, CPU-friendly cross-encoder
     candidate_k: 20 # chunks the stage-1 base hands the reranker (re-scored down to top_k)
+    # Relative relevance gate (DD-019): keep only chunks within this many logits of the top
+    # hit, then cap at top_k — drops weak tails (fewer distractors), may return <top_k.
+    # RELATIVE (per-query top), not absolute, for portability across reranker models;
+    # eval-gated per model. null = off. Calibrated from the score spread.
+    score_margin: null
 
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
@@ -76,6 +74,15 @@ ingestion:
   # Content-hash idempotency tracker (DD-006): sha256 of file bytes, NOT mtime/size —
   # so a git checkout doesn't trigger needless re-embedding. Lives next to the store.
   tracking_file: ./chromadb_data/processed_files.json
+  # Chunking is an INGESTION-time operation (only ingest.py consumes these; the retriever
+  # never sees them), so it lives here, not under retrieval (DD-020).
+  chunk_size: 800 # characters; naive fixed-size chunking to start
+  chunk_overlap: 100
+  chunking:
+    # fixed = naive sliding window (A1); recursive = format-agnostic, boundary-respecting
+    # split (B1: paragraph>line>sentence>word>char). recursive LOST the A/B at this
+    # chunk_size (regressed multi_hop recall + 3 false abstentions) — kept fixed (DD-017).
+    strategy: fixed
 
 prompts:
   # Versioned prompt files, loaded by name from this dir (e.g. answer_system.md,
