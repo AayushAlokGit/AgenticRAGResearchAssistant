@@ -66,8 +66,10 @@ Five modules (see `ProjectIdea.md` for detail), built in order:
 
 - **Design decisions** are tracked in `DESIGN_DECISIONS.md` — one short line each, newest
   first. When a real architectural fork is resolved, add a one-liner there. Keep it terse.
-- **LLM layer:** **Groq-only for now** — `llama-3.3-70b-versatile` for agent/judge — the
-  available provider key; Groq's LPU inference is fast, which suits the eval loop (DD-004).
+- **LLM layer:** **Groq-only for now** — the available provider key; Groq's LPU inference
+  is fast, which suits the eval loop (DD-004). Per-role models (DD-013): generator
+  `llama-3.3-70b-versatile`, judge `openai/gpt-oss-120b` — a different family so the judge
+  doesn't self-grade, and each role gets its own daily-token bucket.
   Embeddings are kept **local** (`all-MiniLM-L6-v2`) — and **must** be, because Groq has no
   embeddings endpoint (text-gen + Whisper only); local is also the lightweight choice for
   limited hardware. The provider-fallback router remains a learning goal: the layer is
@@ -88,4 +90,4 @@ re-deriving with the upgrades this project's plan calls for.
 ## Environment
 
 - Platform: Windows. Shell is PowerShell (use PowerShell syntax).
-- Not yet a git repository.
+- Git repository (default branch `main`).

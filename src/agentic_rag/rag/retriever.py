@@ -171,8 +171,7 @@ def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[b
     # only loads when reranking is actually on).
     from agentic_rag.rag.rerank import CrossEncoderReranker, DEFAULT_MODEL
 
-    reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL),
-                                    score_margin=rerank_cfg.get("score_margin"))
+    reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL))
     candidate_k = rerank_cfg.get("candidate_k", 20)
     logger.debug("reranking on: candidate_k=%s -> top_k", candidate_k)
     return RerankRetriever(base, reranker, candidate_k)

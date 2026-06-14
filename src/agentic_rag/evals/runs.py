@@ -40,7 +40,6 @@ def retrieval_config_snapshot(config: dict) -> dict:
         "rerank_enabled": rerank_on,
         "rerank_model": rerank.get("model") if rerank_on else None,
         "rerank_candidate_k": rerank.get("candidate_k") if rerank_on else None,
-        "rerank_score_margin": rerank.get("score_margin") if rerank_on else None,
         "hybrid_rrf_k": retrieval.get("hybrid", {}).get("rrf_k"),
         "hybrid_candidate_k": retrieval.get("hybrid", {}).get("candidate_k"),
     }

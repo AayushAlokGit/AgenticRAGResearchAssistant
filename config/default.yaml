@@ -54,11 +54,6 @@ retrieval:
     enabled: true
     model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local, CPU-friendly cross-encoder
     candidate_k: 20 # chunks the stage-1 base hands the reranker (re-scored down to top_k)
-    # Relative relevance gate (DD-019): keep only chunks within this many logits of the top
-    # hit, then cap at top_k — drops weak tails (fewer distractors), may return <top_k.
-    # RELATIVE (per-query top), not absolute, for portability across reranker models;
-    # eval-gated per model. null = off. Calibrated from the score spread.
-    score_margin: null
 
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist

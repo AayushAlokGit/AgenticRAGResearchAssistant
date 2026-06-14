@@ -36,19 +36,10 @@ DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 class CrossEncoderReranker:
-    """Re-scores candidate hits by true (query, chunk) relevance, best-first.
+    """Re-scores candidate hits by true (query, chunk) relevance, best-first."""
 
-    Optional RELATIVE relevance gate (`score_margin`): after scoring, keep only hits within
-    `score_margin` of the top hit's score, then cap at top_k — so the reranker can return
-    FEWER than top_k when the tail is weak, cutting distractors. It's RELATIVE (margin from
-    this query's own top) not ABSOLUTE, because cross-encoder logits are uncalibrated and
-    model-specific — an absolute cutoff wouldn't transfer across rerankers (same reason RRF
-    fuses on ranks, not raw scores). The margin is still an eval-gated, per-model knob.
-    """
-
-    def __init__(self, model_name: str = DEFAULT_MODEL, score_margin=None):
+    def __init__(self, model_name: str = DEFAULT_MODEL):
         self._model_name = model_name
-        self._score_margin = score_margin  # None = gate off (always return a full top_k)
         self._model = None  # loaded lazily on first rerank (keeps import cheap)
 
     def _ensure_model(self):
@@ -78,23 +69,9 @@ class CrossEncoderReranker:
             scored_hits.append((float(score), hit))
         scored_hits.sort(key=lambda pair: pair[0], reverse=True)
 
-        # Relative relevance gate: drop hits that fall more than `score_margin` below the top
-        # hit. The top hit always survives (its gap to itself is 0), so we never return empty.
-        kept = scored_hits
-        if self._score_margin is not None and scored_hits:
-            top_score = scored_hits[0][0]
-            cutoff = top_score - self._score_margin
-            kept = []
-            for score, hit in scored_hits:
-                if score >= cutoff:
-                    kept.append((score, hit))
-            if len(kept) < len(scored_hits):
-                logger.debug("rerank gate: kept %d/%d (top=%.3f, cutoff=%.3f)",
-                             len(kept), len(scored_hits), top_score, cutoff)
-
         # Rebuild the kept hits carrying the cross-encoder score (NOT the old RRF/cosine
         # score) — downstream now ranks by relevance, so the score should reflect that.
         reranked = []
-        for score, hit in kept[:top_k]:
+        for score, hit in scored_hits[:top_k]:
             reranked.append(Hit(hit.source, hit.chunk_index, hit.text, score))
         return reranked
