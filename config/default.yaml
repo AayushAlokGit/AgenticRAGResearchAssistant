@@ -45,8 +45,11 @@ agent:
   # ON by default — won its matched A/B (DD-022). Flip to false for the naive baseline.
   enabled: true
   max_rounds: 3 # hard budget: max search rounds before a forced answer (circuit breaker)
-  # Final-answer evidence trimmed to this many chars so it fits the per-request token
-  # ceiling. Eval-tuned guess; raise on a higher-throughput model (DD-022).
+  # Final-answer evidence char cap (arrival-order trim). Originated as a Groq-6K-wall survival
+  # hack, but removing it on Gemini's ~1M context LOST the gate (.800->.725): keeping ALL
+  # evidence diluted answers (PARTIAL 7->10) even as grounding went perfect. So the trim now
+  # earns its place as a QUALITY filter — it keeps the early/on-topic chunks, drops late
+  # second-hop accretion (DD-023). Kept at 16000.
   answer_char_budget: 16000
 
 corpus:
