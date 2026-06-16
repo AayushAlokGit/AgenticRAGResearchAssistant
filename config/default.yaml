@@ -12,13 +12,15 @@ llm:
   # bias (judge) and lets us tier compute by task difficulty (DD-025), each with its
   # own token bucket.
   roles:
-    # controller = the agent's routing/decide-next-action brain (called N times/question).
-    # generator  = the final-answer writer (called once/question).
-    # Both flash-lite = the champion. The synthesis-failure audit (DD-024) motivates an A/B
-    # putting the GENERATOR on gemini-2.5-pro (one pro call/Q) — flip generator.model below.
-    controller: {provider: gemini, model: gemini-2.5-flash-lite}
-    generator: {provider: gemini, model: gemini-2.5-flash-lite} # A/B lever: -> gemini-2.5-pro
-    judge: {provider: gemini, model: gemini-2.5-pro}
+    # Fixed config for the C0->C4 ablation (ABLATION_EXPERIMENT_PLAN.md): hold the models
+    # constant so the ONLY thing moving is the architecture knob under test.
+    # controller = agentic routing brain (used only at C4 when the loop is on).
+    # generator  = final-answer writer.  Both flash (same model = champion, not split).
+    # judge      = grades answers. Groq Llama-4-Scout: cross-provider + cross-family vs the
+    #   Gemini generator => self-eval bias removed, and judge spend sits on Groq's own bucket.
+    controller: {provider: gemini, model: gemini-2.5-flash}
+    generator: {provider: gemini, model: gemini-2.5-flash}
+    judge: {provider: groq, model: openai/gpt-oss-20b}
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   max_retries: 5 # provider-level backoff before the router falls through to the next tier
@@ -26,7 +28,9 @@ llm:
 
 embedding:
   # Local + offline, no API key. Must stay local: Groq has no embeddings endpoint (DD-004).
-  model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder is eval-gated
+  # all-mpnet-base-v2 (768-dim) A/B'd vs this and was a NO-OP at the hybrid+rerank config —
+  # reverted (DD-026): hybrid+cross-encoder already saturate retrieval, masking the embedder.
+  model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder lost its A/B (DD-026)
 
 retrieval:
   top_k: 5 # chunks per query — 5 is the champion, 8 lost to distractors (DD-017)
@@ -38,7 +42,7 @@ retrieval:
   rerank:
     # Stage 2: cross-encoder re-scores (query, chunk) pairs for precision (DD-014).
     enabled: true
-    model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local cross-encoder
+    model: cross-encoder/ms-marco-MiniLM-L-6-v2 # local cross-encoder; a heavier bge-reranker-large was A/B'd and lost
     candidate_k: 20 # chunks handed from stage 1, re-scored down to top_k
   parent_expansion:
     # Stage 3 small-to-big: expand each top_k chunk into its ±window same-source
