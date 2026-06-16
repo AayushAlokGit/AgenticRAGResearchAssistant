@@ -1,7 +1,8 @@
 # Seed eval set — v3
 #
-# 43 hand-written questions (40 answerable + 3 abstention) over the FROZEN corpus
-# snapshot in `corpus/`.
+# 43 questions (40 answerable + 3 abstention) over the FROZEN corpus snapshot in `corpus/`.
+# Drafted with an LLM (Claude Fable 5) fed the corpus, then every question's ground truth was
+# verified by reading the cited documents (see the verification note below).
 #   v1: q01–q12 — naive baseline coverage of the MCP-server (ChromaDB/Azure) docs.
 #   v2: q13–q32 — added headroom (v1's recall@5 saturated at 1.0) + covered docs v1 missed.
 #   v3: q33–q43 — covers THREE new docs added to the corpus (CHUNKING.md, RERANKING.md,

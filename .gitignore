@@ -35,6 +35,14 @@ traces/
 logs/
 *.log
 
+# Personal marketing / planning drafts — not part of the public project
+docs/LINKEDIN_POST.md
+ABLATION_EXPERIMENT_PLAN.md
+
+# Local-only ablation tooling + generated assets (results live in DESIGN_DECISIONS / EXPERIMENTS)
+experiments/
+docs/ablation_*
+
 # Notebooks
 .ipynb_checkpoints/
 
