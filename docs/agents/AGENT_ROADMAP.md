@@ -92,6 +92,27 @@ don't exist yet because there's nothing to select between. So the curriculum sta
 
 ## Progress Log *(newest first; update when an increment lands)*
 
+- **2026-06-19 — FIRST AGENTIC BASELINE established (new-lineage anchor) — DD-028.** Ran
+  `evals/agentic_eval.py` over the new `agentic.yaml` (16 capability-tagged Qs across two
+  corpus domains: the RAG-server docs + a newly-ingested 7-doc claims-ETL pipeline). Baseline
+  config: four-tool action space `[search, expand_document, list_sources, finish]`,
+  `max_rounds=5`, `answer_char_budget=0`, **`parent_expansion` OFF** (fixed ±1-neighbour policy
+  retired in favour of on-demand `expand_document` — re-A/B-able). **Numbers: correctness
+  0.615 (8/13), abstention 3/3, trajectory 0.562 (9/16).** Capability (outcome|traj): efficiency
+  4/5|3/5, decomposition **1/4**|4/4, tool_selection 3/4|2/4, grounded_stopping 3/3|0/3.
+  - **Binding constraint = decomposition completeness.** The agent takes the hops (traj 4/4)
+    but the generator drops second-hop facts → INCORRECT (a10/a14/a16) — a synthesis problem,
+    not a planning one (cf. DD-024). Top lever for B2 (reflection/self-critique) or a
+    completeness-aware answer step; also test whether `parent_expansion`-OFF hurt multi-hop.
+  - **Special tools barely used** — `expand_document` 2×, `list_sources` 1× over 16 Qs; the
+    controller defaults to `search`, and a06/a12 were answered correctly *without* expanding.
+    Feeds the open "does the richer action space earn its keep / right expansion granularity"
+    question (the `expand_around_chunk` idea is parked pending this evidence).
+  - **Eval-refinement TODO:** grounded_stopping `expects_exit: finish` is too strict — correct
+    abstentions reached via the oscillation guard (`exit=oscillation`) score as traj misses
+    though the behaviour is good. Loosen the assertion (accept `oscillation`, or drop it).
+
+
 - **2026-06-18 — New baseline lineage declared: "agentic system" (vs the old "pure RAG +
   simple ReAct").** Decision (user): stop comparing against the old champion's absolute
   numbers; the prior system's results (DD-001..DD-026) stand as the *pure-RAG + simple-ReAct*

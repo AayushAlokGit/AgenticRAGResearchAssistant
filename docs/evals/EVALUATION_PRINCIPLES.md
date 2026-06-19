@@ -179,5 +179,7 @@ metric names will follow from the domain.
 
 ---
 
-*See also: `evals/README.md` (how this project's harness is staged) and
-`DESIGN_DECISIONS.md` DD-001 (why evals are built early here).*
+*See also: `docs/evals/AGENT_EVAL_SETS.md` (how to **construct** the dataset for an
+agent — the build-side companion to this measure-side doc), `evals/README.md` (how this
+project's harness is staged), and `DESIGN_DECISIONS.md` DD-001 (why evals are built
+early here).*

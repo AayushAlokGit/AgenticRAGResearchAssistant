@@ -194,6 +194,17 @@ _TOOL_CATALOGUE: Dict[str, Tool] = {
 DEFAULT_TOOLS = ["search", "finish"]  # reproduces the pre-A1 champion (search + finish only)
 
 
+def known_tool_names() -> List[str]:
+    """Every tool the agent COULD have (the full catalogue, across all arms).
+
+    Used by the eval-set loader to validate ``trajectory.expects_tool`` so a renamed/typo'd
+    tool fails loudly rather than silently never-matching (DD-027). Validates against the
+    catalogue, NOT a single arm's registry — a tool legitimately absent from one A/B arm
+    still names a real tool.
+    """
+    return list(_TOOL_CATALOGUE)
+
+
 # ───────────────────────────── the registry ─────────────────────────────
 
 class ToolRegistry:

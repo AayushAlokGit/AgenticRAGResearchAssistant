@@ -72,6 +72,32 @@ class AgentStep:
 
 
 @dataclass
+class Scratchpad:
+    """The evidence gathered across rounds: deduped, kept in arrival order.
+
+    Encapsulates an invariant that was previously maintained by hand with two parallel
+    structures (a list + a `seen` set kept in sync by a free function): a chunk is added at
+    most once, identified by (source, chunk_index). One type owns the rule.
+    """
+    hits: List[Hit] = field(default_factory=list)
+    _seen: set = field(default_factory=set)  # (source, chunk_index) already held
+
+    def add(self, hits: List[Hit]) -> List[Hit]:
+        """Add hits not already held; return the newly-added ones (for logging/stop conditions)."""
+        new_hits = []
+        for hit in hits:
+            key = (hit.source, hit.chunk_index)
+            if key not in self._seen:
+                self._seen.add(key)
+                self.hits.append(hit)
+                new_hits.append(hit)
+        return new_hits
+
+    def __len__(self) -> int:
+        return len(self.hits)
+
+
+@dataclass
 class Decision:
     """The controller's chosen next action, already parsed AND validated against the registry."""
     thought: str
@@ -221,8 +247,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
 
     logger.info("agent: START | budget<=%d round(s), tools=%s, top_k=%d, answer<=%d chars | Q: %s",
                 max_rounds, registry.names(), top_k, answer_char_budget, question)
-    scratchpad: List[Hit] = []   # the evidence so far, deduped, ordered by arrival
-    seen = set()                 # (source, chunk_index) already in the scratchpad
+    scratchpad = Scratchpad()    # the evidence so far, deduped, ordered by arrival
     steps: List[AgentStep] = []
     exit_reason = "budget"       # default: the loop ran out of rounds without a FINISH
     controller_usage = Usage()
@@ -236,7 +261,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
                     round_index + 1, max_rounds, len(scratchpad))
 
         decision = decide_next_action(controller_llm, react_prompt, registry, question,
-                                      scratchpad, steps, rounds_left)
+                                      scratchpad.hits, steps, rounds_left)
         controller_usage = controller_usage + decision.usage
         tool_errors += decision.failed_attempts
         tool = decision.tool
@@ -253,7 +278,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         args_repr = ", ".join(f"{k}={v}" for k, v in decision.args.model_dump().items())
         logger.info("agent: action=%s args={%s}", tool.name, args_repr)
         result = tool.run(decision.args, ctx)
-        new_hits = add_new_hits(result.hits, scratchpad, seen)
+        new_hits = scratchpad.add(result.hits)
         steps.append(AgentStep(decision.thought, tool.name, args_repr, result.observation, len(new_hits)))
         logger.info("agent: -> %s | +%d new chunk(s) | scratchpad=%d",
                     result.observation.splitlines()[0], len(new_hits), len(scratchpad))
@@ -272,19 +297,8 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     logger.info("agent: loop done — %d round(s) used, calls=%s, %d chunk(s) gathered, exit=%s",
                 n_actions, tool_calls, len(scratchpad), exit_reason)
 
-    # Final answer over the gathered evidence, TRIMMED to fit the model's per-request ceiling
-    # (token budgeting). Uses the same cited-answer step as the naive pipeline.
-    if scratchpad:
-        selected = select_within_budget(scratchpad, answer_char_budget)
-        if len(selected) < len(scratchpad):
-            logger.info("agent: compaction — trimmed %d -> %d chunk(s) to fit the %d-char budget",
-                        len(scratchpad), len(selected), answer_char_budget)
-        result = generate_from_scratchpad(question, selected, llm, answer_prompt)
-    else:
-        # Finished without retrieving anything — fall back to one direct retrieval so we never
-        # answer on empty context.
-        logger.info("agent: empty scratchpad — falling back to a single naive retrieval")
-        result = generate_answer(question, retriever, llm, answer_prompt, top_k)
+    result = answer_from_evidence(question, scratchpad, retriever, llm, answer_prompt,
+                                  top_k, answer_char_budget)
 
     # Attribute the controller (routing) cost to its own bucket; the generator bucket was set
     # by the answer call above. Kept separate so a tiered run shows each role's cost (DD-025).
@@ -322,16 +336,23 @@ def select_within_budget(scratchpad: List[Hit], char_budget: int) -> List[Hit]:
     return selected
 
 
-def add_new_hits(hits: List[Hit], scratchpad: List[Hit], seen: set) -> List[Hit]:
-    """Append hits not already in the scratchpad; return the newly-added ones (for logging)."""
-    new_hits = []
-    for hit in hits:
-        key = (hit.source, hit.chunk_index)
-        if key not in seen:
-            seen.add(key)
-            scratchpad.append(hit)
-            new_hits.append(hit)
-    return new_hits
+def answer_from_evidence(question: str, scratchpad: Scratchpad, retriever, llm, answer_prompt: str,
+                         top_k: int, answer_char_budget: int) -> AnswerResult:
+    """Write the final cited answer from the gathered evidence (the loop's second job).
+
+    The evidence is TRIMMED to fit the model's per-request ceiling (token budgeting) and
+    answered with the same cited-answer step as the naive pipeline. If the loop finished
+    without retrieving anything, fall back to one direct retrieval so we never answer on
+    empty context.
+    """
+    if not scratchpad.hits:
+        logger.info("agent: empty scratchpad — falling back to a single naive retrieval")
+        return generate_answer(question, retriever, llm, answer_prompt, top_k)
+    selected = select_within_budget(scratchpad.hits, answer_char_budget)
+    if len(selected) < len(scratchpad):
+        logger.info("agent: compaction — trimmed %d -> %d chunk(s) to fit the %d-char budget",
+                    len(scratchpad), len(selected), answer_char_budget)
+    return generate_from_scratchpad(question, selected, llm, answer_prompt)
 
 
 def generate_from_scratchpad(question: str, scratchpad: List[Hit], llm, answer_prompt: str) -> AnswerResult:
@@ -381,6 +402,22 @@ class Answerer:
         return generate_answer(question, self.retriever, self.llm, self.answer_prompt, self.top_k)
 
 
+def build_agent_deps(config: dict, tool_names: List[str]):
+    """Build the agent's two corpus-facing dependencies: the action space and a store handle.
+
+    Shared by `build_answerer` and the CLI `main` so the wiring lives in one place (change the
+    store construction once). The store is built here, not dug out of the retriever, so the
+    tools that read the corpus directly (expand_document, list_sources) have an explicit handle.
+    """
+    from agentic_rag.config import resolve_path
+    from agentic_rag.rag.vector_store import ChromaVectorStore
+
+    registry = build_registry(tool_names)
+    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]),
+                              config["vector_store"]["collection"])
+    return registry, store
+
+
 def build_answerer(config: dict, retriever, llm, controller_llm=None) -> Answerer:
     """Construct the Answerer from config; `agent.enabled` decides naive vs agentic.
 
@@ -399,13 +436,7 @@ def build_answerer(config: dict, retriever, llm, controller_llm=None) -> Answere
     store = None
     if agentic:
         # The action space (agent.tools); default reproduces the pre-A1 champion (search+finish).
-        registry = build_registry(agent_cfg.get("tools", DEFAULT_TOOLS))
-        # Some tools read the corpus directly, so build a store handle for them. Built here
-        # (not dug out of the retriever) so the dependency is explicit.
-        from agentic_rag.config import resolve_path
-        from agentic_rag.rag.vector_store import ChromaVectorStore
-        store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]),
-                                  config["vector_store"]["collection"])
+        registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
 
     return Answerer(retriever, llm, answer_prompt, top_k, agentic, react_prompt, max_rounds,
                     answer_char_budget, controller_llm=controller_llm, registry=registry, store=store)
@@ -425,11 +456,10 @@ def main() -> None:
                         help="Comma-separated tool set to use (e.g. search,expand_document,list_sources,finish).")
     args = parser.parse_args()
 
-    from agentic_rag.config import load_config, resolve_path
+    from agentic_rag.config import load_config
     from agentic_rag.llm.provider import build_llm
     from agentic_rag.logging_setup import configure_run_logging
     from agentic_rag.rag.retriever import build_retriever
-    from agentic_rag.rag.vector_store import ChromaVectorStore
 
     configure_run_logging("agent/loop")
     config = load_config()
@@ -443,9 +473,7 @@ def main() -> None:
     max_rounds = args.max_rounds if args.max_rounds is not None else agent_cfg.get("max_rounds", 3)
     answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
     tool_names = [t.strip() for t in args.tools.split(",")] if args.tools else agent_cfg.get("tools", DEFAULT_TOOLS)
-    registry = build_registry(tool_names)
-    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]),
-                              config["vector_store"]["collection"])
+    registry, store = build_agent_deps(config, tool_names)
 
     question = " ".join(args.question)
     result = run_agent(question, retriever, llm, react_prompt, answer_prompt, top_k, max_rounds,

@@ -7,29 +7,16 @@ llm:
   models:
     gemini: gemini-2.5-flash # default model per provider
     groq: llama-3.3-70b-versatile
-  # Per-role provider+model (DD-013/DD-021). Form: {provider, model}, or a bare
-  # string = that model on the default provider. Splitting roles removes self-eval
-  # bias (judge) and lets us tier compute by task difficulty (DD-025), each with its
-  # own token bucket.
   roles:
-    # Fixed config for the C0->C4 ablation (ABLATION_EXPERIMENT_PLAN.md): hold the models
-    # constant so the ONLY thing moving is the architecture knob under test.
-    # controller = agentic routing brain (used only at C4 when the loop is on).
-    # generator  = final-answer writer.  Both flash (same model = champion, not split).
-    # judge      = grades answers. Groq Llama-4-Scout: cross-provider + cross-family vs the
-    #   Gemini generator => self-eval bias removed, and judge spend sits on Groq's own bucket.
     controller: {provider: gemini, model: gemini-2.5-flash}
     generator: {provider: gemini, model: gemini-2.5-flash}
-    judge: {provider: groq, model: openai/gpt-oss-20b}
+    judge: {provider: groq, model: meta-llama/llama-4-scout-17b-16e-instruct}
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   max_retries: 5 # provider-level backoff before the router falls through to the next tier
   timeout: 30.0 # seconds per request
 
 embedding:
-  # Local + offline, no API key. Must stay local: Groq has no embeddings endpoint (DD-004).
-  # all-mpnet-base-v2 (768-dim) A/B'd vs this and was a NO-OP at the hybrid+rerank config —
-  # reverted (DD-026): hybrid+cross-encoder already saturate retrieval, masking the embedder.
   model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder lost its A/B (DD-026)
 
 retrieval:
@@ -47,18 +34,16 @@ retrieval:
   parent_expansion:
     # Stage 3 small-to-big: expand each top_k chunk into its ±window same-source
     # neighbours to restore split tables/sections without distractors (DD-020).
-    enabled: true
+    enabled: false
     window: 1 # window=1 => 3-chunk parent windows
 
 agent:
   # When on, the answer path is a retrieve->reason->retrieve loop (Module 2).
   # ON by default — won its matched A/B (DD-022). Flip to false for the naive baseline.
   enabled: true
-  max_rounds: 3 # hard budget: max search rounds before a forced answer (circuit breaker)
-  # The action space (A1). Default [search, finish] reproduces the pre-A1 champion, so an
-  # A/B that adds expand_document/list_sources isolates "richer action space" as the one
-  # variable. finish is always available even if omitted. Tool catalogue: agent/tools.py.
-  tools: [search, finish] # A/B candidate: [search, expand_document, list_sources, finish]
+  max_rounds: 5 # hard budget: max search rounds before a forced answer (circuit breaker)
+  # Tool catalogue: agent/tools.py.
+  tools: [search, expand_document, list_sources, finish] # first agentic baseline: full action space
   # Final-answer evidence char cap (arrival-order trim). 0 = OFF (keep all gathered evidence).
   # NEW AGENTIC BASELINE: starts OFF. The trim originated as a Groq-6K-wall survival hack;
   # under the PRIOR pure-RAG + simple-ReAct pipeline an A/B found it incidentally helped as a

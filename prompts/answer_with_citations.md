@@ -8,7 +8,7 @@ Follow these rules strictly:
    that are not stated in the passages.
 2. If the CONTEXT does not contain enough information to answer the QUESTION, reply with
    exactly this sentence and nothing else:
-   Not enough information.
+   "Not enough information."
 3. When you state a fact, cite the source filename it came from in square brackets — for
    example [LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md]. Cite every passage you rely on.
 4. Answer COMPLETELY. Many questions have several parts, or ask for a list, a sequence of

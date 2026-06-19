@@ -1,0 +1,261 @@
+# Agentic eval set — v1
+#
+# The CAPABILITY layer that complements seed.yaml's REGRESSION layer, organized by AGENT
+# capability. See docs/evals/AGENT_EVAL_SETS.md for the taxonomy, design rationale, and the
+# corpus/distractor structure.
+#
+# ── Schema ────────────────────────────────────────────────────────────────────────────────
+# Outcome fields (id, type, question, match, expected_sources, should_abstain, expected_answer,
+# notes) + two optional agentic fields:
+#   capability : single_shot_efficiency | decomposition | tool_selection | grounded_stopping.
+#                (adaptive_recovery deferred to A3 — see gap note below.)
+#   trajectory : OPTIONAL loose L1 path assertion, scored as a SEPARATE diagnostic (PASS/FAIL),
+#                never folded into correctness. Keys map onto the run Trajectory:
+#                  expects_tool  : tool_calls[tool] >= 1    (binds to the CODE name — DD-027)
+#                  max_rounds    : rounds_used <= N   (rounds_used COUNTS finish; cheapest = 2)
+#                  min_searches  : tool_calls['search'] >= N
+#                  expects_exit  : exit_reason == finish | budget | oscillation
+#
+# ── Capability coverage (taxonomy → questions) ────────────────────────────────────────────
+#   single_shot_efficiency : a01, a02 (RAG) · a11, a15 (claims) · a17 (cross-domain homonym)
+#   decomposition          : a03 (RAG)       · a10, a14 (claims) · a16 (MCP-server, 2 docs)
+#   tool_selection         : a05, a06 (RAG expand_document) · a07 (list_sources) · a12 (claims expand_document)
+#   grounded_stopping      : a08, a09 (RAG abstain)         · a13 (claims abstain)
+#
+# ── Notes ─────────────────────────────────────────────────────────────────────────────────
+#   - a04 is intentionally VACANT — ids are stable handles, never renumbered (seed.yaml convention).
+#   - extraction-improvement-roadmap.md is DELIBERATELY not targeted (volatile open-issues log).
+#   - Known gap: adaptive_recovery (first search fails/distracts → agent reformulates) is
+#     DEFERRED to A3, when tool errors become recoverable observations.
+
+version: 1
+corpus: ./corpus            # 22-doc snapshot (RAG-server docs + claims-ETL docs)
+
+questions:
+  # ═══ single_shot_efficiency — answer in ONE search; over-searching is the failure ═══════
+  - id: a01
+    type: factual
+    capability: single_shot_efficiency
+    question: "In vector search, why are embeddings normalized to unit length before they're stored?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b. You pay the division once at embed time, making every later comparison a cheap dot product — and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics can ride on L2-optimized index machinery."
+    trajectory:
+      max_rounds: 2
+      expects_exit: finish
+    notes: "Single self-contained fact (VECTOR_DB_INTERNALS §3). Tests that the agent recognizes one search suffices and stops, instead of looping. Efficiency probe."
+
+  - id: a02
+    type: factual
+    capability: single_shot_efficiency
+    question: "What are the forcing functions that make chunking necessary in the first place?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Four hard constraints: (1) the embedder's input limit (models truncate beyond ~256–512 tokens); (2) retrieval precision (a single vector for a whole document averages away specifics); (3) the generation budget (you can't stuff whole documents into the prompt); and (4) signal-to-noise (a focused chunk gives the generator the relevant passage without distractor text)."
+    trajectory:
+      max_rounds: 2
+      expects_exit: finish
+    notes: "Enumerated fact concentrated in one section (CHUNKING §1). One search lands it. Efficiency probe — a four-item list shouldn't tempt extra rounds."
+
+  - id: a11
+    type: factual
+    capability: single_shot_efficiency
+    question: "What are the two persisted tables in the claims data model, and what is the conceptual distinction between them?"
+    match: any
+    expected_sources:
+      - data-modeling.md
+      - DESIGN.md
+    should_abstain: false
+    expected_answer: "Two tables: Claim and Event. Claim holds facts that describe the claim ITSELF — mostly static over its lifetime (claim_id, jurisdiction, claim_type, date_of_loss) — answering 'what is this claim about?'. Event is the derived, queryable timeline: each row is a typed, dated thing that happened (reserve_change, appointment, return_to_work), with type-specific data in a JSON attributes column. Rule of thumb: if a fact has its own date it's an Event; if it has no meaningful date it's a Claim attribute. Two tables is the minimum schema where the four sample queries reduce to one-line aggregations."
+    trajectory:
+      max_rounds: 2
+      expects_exit: finish
+    notes: "Single concentrated fact (data-modeling.md §1, also DESIGN.md §3). One search lands it. Efficiency probe (claims domain)."
+
+  - id: a15
+    type: factual
+    capability: single_shot_efficiency
+    question: "In the claims extraction pipeline, why are reserve-change dollar amounts pulled out with deterministic rules and never sent through the LLM?"
+    match: any
+    expected_sources:
+      - extractor.md
+      - DESIGN.md
+    should_abstain: false
+    expected_answer: "Because reserve amounts are exact, templated financial data where reproducibility is non-negotiable: a rule regex captures 'Changed to $321,014.00' precisely, whereas an LLM could round it to $321,000 — a catastrophic and silent failure. This is the hybrid principle: rules where the text is templated and correctness is exact (money, dates in structured headers); the LLM only where the fact needs reading comprehension (e.g. did a return-to-work actually happen vs. is it merely being discussed). Rules' failure mode is a recoverable 'no match'; an LLM's failure mode on exact financial data is a wrong number."
+    trajectory:
+      max_rounds: 2
+      expects_exit: finish
+    notes: "Single sharp principle (extractor.md §3, DESIGN.md §5). One search lands it. Efficiency probe (claims domain) — a one-fact question shouldn't tempt extra rounds."
+
+  - id: a17
+    type: factual
+    capability: single_shot_efficiency
+    question: "In the claims pipeline's normalization step, what is done to garbled characters such as 'â€\"' in a note body, and why does handling them correctly matter for the extractors that run afterward?"
+    match: any
+    expected_sources:
+      - normalizer.md
+    should_abstain: false
+    expected_answer: "The Normalizer applies lossless, character-level mojibake repair: 'â€\"' (a UTF-8 em dash mis-decoded as Windows-1252) is fixed back to '—', 'â€™' to a right single quote, stray 'Â ' non-breaking-space artifacts to a regular space, CRLF line endings to '\\n', and so on. It matters downstream for two reasons: (1) the RULE extractors' regexes silently fail when a templated marker reads 'Date of Appointmentâ€\"' instead of 'Date of Appointment—'; and (2) the LLM extractor's evidence_quote substring check fails when the body and the copied quote disagree on a character the model treats as a dash. Crucially this is character-ENCODING repair that preserves meaning — it is NOT the unit-length vector normalization done in the vector-search pipeline, a different operation in a different system that merely shares the word."
+    trajectory:
+      max_rounds: 2
+      expects_exit: finish
+    notes: "Cross-domain HOMONYM probe: 'normalization' here is text/encoding cleanup (normalizer.md §3.1) but in VECTOR_DB_INTERNALS §3 ('Normalization (the trick)') it is unit-vector scaling — a strong lexical distractor spanning the two domains. The qualifiers ('claims pipeline', 'garbled characters', the mojibake string, 'extractors afterward') disambiguate toward normalizer.md; the bare term pulls toward the vector doc. The OUTCOME axis is the real test: did the agent ground the RIGHT sense and not borrow the vector-normalization answer? A trajectory miss (>1 search) most likely means the first search surfaced the vector sense and the agent reformulated — a SOFT early signal of the DEFERRED adaptive_recovery capability (see Known gap), a flag to inspect, not an auto-fail."
+
+  # ═══ decomposition — facts split across docs/stages; agent must take ≥2 hops ════════════
+  - id: a03
+    type: multi_hop
+    capability: decomposition
+    question: "Trace a chunk through this pipeline: what dial governs the SIZE it is split at (and what caps that size), how is its vector made cheap to compare by cosine at query time, and what second-stage model re-scores it for precision?"
+    match: all
+    expected_sources:
+      - CHUNKING.md
+      - VECTOR_DB_INTERNALS.md
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "Size is set by the chunk_size dial — the master precision↔context knob — capped above by the embedder's token input limit (e.g. MiniLM ~256–512 tokens). The chunk's vector is normalized to unit length at embed time, so cosine similarity becomes a plain dot product (a cheap comparison) at query time. Then a cross-encoder reranker re-scores the (query, chunk) pair jointly in stage 2 for precision."
+    trajectory:
+      min_searches: 2
+    notes: "Genuine 3-hop: chunk_size dial + embedder cap (CHUNKING §5/§1), normalization→dot (VECTOR_DB §3), cross-encoder rerank (RERANKING §2/§9). Each doc holds one necessary third; match:all so partial retrieval scores partial. Forces ≥2 searches."
+
+  - id: a10
+    type: multi_hop
+    capability: decomposition
+    question: "In the claims pipeline the Normalizer cleans text and dates, yet it deliberately leaves the dates INSIDE a note's body as raw text — why? And separately, why is collapsing the many surface forms of a provider's name ('Dr. Caldwell', 'Caldwell, MD', the clinic name) into one identity the RESOLVER's job rather than the Normalizer's?"
+    match: all
+    expected_sources:
+      - normalizer.md
+      - resolver.md
+    should_abstain: false
+    expected_answer: "The Normalizer parses the note's HEADER date into a typed ISO field but leaves BODY dates as raw text for two reasons: (1) the LLM extractor's evidence_quote must stay a verbatim substring of the body — a post-LLM substring check verifies it — so rewriting the body would break that check and an auditor's ability to trace the extraction; and (2) body dates are often ambiguous (5/4 could be May 4 or Apr 5; 'the 21st'; '4 weeks' is a duration), so rewriting in place risks corrupting text — a recoverable null from the shared date parser is safer. Identity canonicalization is the RESOLVER's job because it needs CROSS-NOTE context: the Normalizer is stateless per-note and can't see the other mentions, whereas the Resolver merges encounters on the parties-set key (deterministic normalization + set intersection) at the stage where that cross-note context exists."
+    trajectory:
+      min_searches: 2
+    notes: "Genuine 2-hop across stages: body-dates-left-raw (normalizer.md §3.2/§7) + identity-is-the-Resolver's-job (normalizer.md §7 → resolver.md §1/§5). Real causal structure: evidence_quote fidelity drives the date choice; cross-note context drives the identity choice. match:all."
+
+  - id: a14
+    type: multi_hop
+    capability: decomposition
+    question: "A single appointment is mentioned in two separate notes — a scheduling notice and a later 'she attended' record. Which pipeline stage is STRUCTURALLY unable to merge these two mentions into one event and why, and which stage does merge them, on what matching key?"
+    match: all
+    expected_sources:
+      - extractor.md
+      - resolver.md
+    should_abstain: false
+    expected_answer: "The EXTRACTOR is structurally unable to merge them: it runs per note and cannot see other notes, so it emits each mention as a separate candidate (one-sided/empty is fine — duplication is expected and cheap). The RESOLVER does the merge, using the appointment match key (claim_id, exact encounter_date, parties_overlap ≥ 1): it normalizes the LLM-emitted parties set deterministically (strip honorifics/degree suffixes, &→and, lowercase) and merges encounters that share an exact encounter_date and at least one party — no fuzzy matching, no ±N-day window. The merged event unions the date fields and resolves status by asymmetric precedence."
+    trajectory:
+      min_searches: 2
+    notes: "Genuine 2-hop with real pipeline causality: the per-note invariant (extractor.md §2/§7) + the appointment match key (resolver.md Pass 2 / §5). Each doc holds a necessary half. The iconic Q4 schedule-to-seen merge story. match:all."
+
+  - id: a16
+    type: multi_hop
+    capability: decomposition
+    question: "Trace the query path in the documentation-retrieval MCP server: when the local embedding service turns text into the vector used for search, what pooling and normalization does it apply to produce that vector — and once that vector reaches ChromaDB, what index type and similarity function find the nearest matches?"
+    match: all
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "The local embedding service runs the model forward pass, then applies MEAN POOLING over the token embeddings (the masked token states summed and divided by the attention-mask count) and finally L2 NORMALIZATION (F.normalize, p=2) to produce a unit-length 384-dimensional vector. That vector is stored in ChromaDB, which indexes it with HNSW and searches by COSINE similarity (the configured distance function is cosine). Because the vectors are L2-normalized to unit length, cosine ranking rides cleanly on the index — the normalize-then-cosine trick from the vector-DB internals, here as the MCP server's actual implementation."
+    trajectory:
+      min_searches: 2
+    notes: "Genuine 2-hop across two MCP-server OPERATIONAL docs, each holding a necessary half: mean-pooling + L2 normalization lives only in LOCAL_EMBEDDING_SERVICE_DOCUMENTATION (§Runtime Execution); HNSW + cosine lives only in 02-Architecture (§ChromaDB Optimization + the env config). Real pipeline causality (embed → index), not a contrived staple — the connection is the literal query path. Brings the AGENT layer onto the project's PRIMARY corpus, which v2 used only as distractor mass (seed.yaml already covers these docs for OUTCOME). match:all so partial retrieval scores partial; forces ≥2 searches."
+
+  # ═══ tool_selection — expand_document / list_sources is the right move ══════════════════
+  - id: a05
+    type: factual
+    capability: tool_selection
+    question: "What are the major FAMILIES of chunking strategy, and for each family give one representative strategy with its one-line idea?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Family A size-based (A1 fixed-size: cut every N chars/tokens; A2 sliding-window/overlap: adjacent chunks share tokens). Family B structure-aware (B1 recursive splitting on a paragraph→line→sentence→word→char hierarchy; B2 format/document-aware: split on markdown/HTML/AST). Family C meaning-based (C1 semantic chunking: cut at topic shifts; C2 proposition/atomic: LLM rewrites into standalone facts). Family D decouple retrieval-unit≠generation-unit (D1 parent–child/small-to-big; D2 sentence-window). Family E context-preserving embeddings (E1 Contextual Retrieval, E2 late chunking, E3 metadata enrichment)."
+    trajectory:
+      expects_tool: expand_document
+    notes: "The full A–E taxonomy spans most of CHUNKING.md §4 — more than top_k=5 + the ±1 parent window can carry, and re-searching one doc just re-hits overlapping chunks. A good path pulls the whole doc with expand_document. SOFT discriminator: the four-tool arm might still answer via plain search — a trajectory miss is a flag, not an auto-fail. The baseline arm cannot use the tool at all."
+
+  - id: a06
+    type: factual
+    capability: tool_selection
+    question: "Give a complete end-to-end account of two-stage retrieval (retrieve-then-rerank): the core tension it resolves, both encoder architectures and how they differ, what the reranker's score actually is, and what production systems add on top."
+    match: any
+    expected_sources:
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "Tension: one model can't be both cheap enough to scan millions and accurate enough to rank the top few, so you stage it. Stage 1 bi-encoder encodes query and item SEPARATELY into vectors (precomputable/indexable, but a lossy query-blind summary); stage 2 cross-encoder concatenates the (query,item) pair and scores it JOINTLY via cross-attention (accurate, but not indexable — a fresh forward pass per pair at query time). The score is a single uncalibrated logit (higher=more relevant) from a head fine-tuned on a labeled ranking dataset like MS MARCO; it measures RELEVANCE, not correctness or faithfulness. Production adds: hosted vs self-hosted GPU serving behind a thin wrapper; other ranker families (cross-encoder pointwise, LambdaMART learning-to-rank over features, LLM listwise rerankers); latency mitigations (cap candidate_k, batch in one pass, distill/quantize, a multi-stage funnel); blended signals + click-feedback retraining via online A/B; and graceful degradation (timeout → fall back to the stage-1 order, cache hot (query,doc) pairs)."
+    trajectory:
+      expects_tool: expand_document
+    notes: "Demands coverage of RERANKING §1–§3 + §7 — essentially the whole doc, well past a single window. A good path expands the document. Same soft-discriminator caveat as a05."
+
+  - id: a07
+    type: factual
+    capability: tool_selection
+    question: "The corpus covers two very different systems. Which documents belong to the workers'-comp claims-analysis pipeline, as opposed to the documentation-retrieval/RAG system?"
+    match: any
+    expected_sources:
+      - DESIGN.md
+      - extractor.md
+      - resolver.md
+      - normalizer.md
+      - data-modeling.md
+    should_abstain: false
+    expected_answer: "The claims-analysis pipeline docs are: DESIGN.md, data-modeling.md, extractor.md, normalizer.md, resolver.md, claims file analysis.md, and extraction-improvement-roadmap.md (the workers'-comp claim ETL pipeline). Everything else describes the separate documentation-retrieval MCP/RAG system — its architecture variants, chunking, reranking, vector-DB internals, embeddings, and setup guides."
+    trajectory:
+      expects_tool: list_sources
+    notes: "A question ABOUT THE SET of documents, across two domains, is naturally answered by listing the corpus (a count-of-architecture-docs phrasing would be ambiguous now that DESIGN.md adds an Architecture section). SOFT discriminator — a content search for 'claims' also surfaces these docs — so it primarily tests whether the controller CHOOSES to orient via list_sources. Retrieval recall is secondary here (the answer is a filename survey)."
+
+  - id: a12
+    type: factual
+    capability: tool_selection
+    question: "What are the active extractors in the v1 claims pipeline, and for each, does it use deterministic rules or an LLM — and why?"
+    match: any
+    expected_sources:
+      - extractor.md
+    should_abstain: false
+    expected_answer: "ReserveChangeExtractor (RULE) — fires on Activity:'Reserving' notes and regex-captures the 'Changed to $X' line; rules because financial amounts are exact, templated, and must be 100% reproducible. AppointmentMarkerExtractor (RULE, fast-path) — catches templated headers ('Date of Appointment:', 'Next Office Visit:', etc.) without paying LLM tokens. AppointmentExtractor (LLM, general path) — fires on any note plausibly describing a medical appointment, reading narrative status (attended/missed/cancelled/scheduled) and novel scheduling formats the marker rule misses. ReturnToWorkExtractor (LLM) — judges whether a return actually occurred vs. was merely offered/discussed, which a regex can't do. The appointment type deliberately uses BOTH a rule and an LLM extractor, with the Resolver reconciling the candidates."
+    trajectory:
+      expects_tool: expand_document
+    notes: "The extractor catalog spans extractor.md §5 (5.1–5.4) plus the hybrid rationale in §3 — broad single-doc synthesis past a single window, so a good path expands the whole doc. Deliberately asks to NAME the extractors, NOT to COUNT them: the doc is internally inconsistent on count (§5 intro says 'five' but lists four named) — a count question would have no defensible ground truth. Soft discriminator (same caveat as a05/a06)."
+
+  # ═══ grounded_stopping — answer ABSENT; DECIDE to refuse, don't spin to budget ══════════
+  - id: a08
+    type: abstention
+    capability: grounded_stopping
+    question: "What token chunk size does the project recommend for its planned recursive-splitting (B1) chunking upgrade?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The docs present recursive (B1, token-based) splitting as the planned upgrade from the current 800-CHARACTER fixed-size baseline, but give no recommended token size for it — only the current 800-char setting."
+    trajectory:
+      max_rounds: 4
+      expects_exit: finish
+    notes: "Plausible-but-absent: discusses the B1 upgrade and a tempting adjacent number (800-CHAR), but no recommended TOKEN size exists in the corpus. Agent should search, see no number, and choose to abstain. max_rounds caps effort so 'grounded stopping' means refuse-without-burning-budget, not 'looped near the cap then finished'."
+
+  - id: a09
+    type: abstention
+    capability: grounded_stopping
+    question: "What recall@k numbers did this project's parent-child (small-to-big) chunking A/B experiment produce?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The corpus presents parent–child / small-to-big chunking as a planned 'next lever,' not a completed experiment — it reports no measured A/B recall numbers for it. (The only reranking-style results table in the corpus is for the cross-encoder reranker, not for parent–child chunking.)"
+    trajectory:
+      max_rounds: 4
+      expects_exit: finish
+    notes: "The parent-child A/B exists in this project's DESIGN_DECISIONS (DD-020) but NOT in the corpus, so over-corpus the correct behavior is to abstain. Distractor: RERANKING §9 shows a recall table for the RERANKER, tempting a wrong borrow. max_rounds asserts the refusal is reached without spinning to budget chasing the absent table."
+
+  - id: a13
+    type: abstention
+    capability: grounded_stopping
+    question: "On a claim's financial reserves, what does the NLE field stand for?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The claims-file inventory lists NLE as a field that appears with a value (e.g. 34.92) but explicitly marks its meaning as 'to confirm' — the documentation never defines what NLE stands for."
+    trajectory:
+      max_rounds: 4
+      expects_exit: finish
+    notes: "Plausible-but-undefined (claims domain): claims file analysis.md §10 lists 'NLE — value present (34.92) — meaning to confirm'. The abbreviation IS in the corpus but its expansion is explicitly unknown, tempting a fabricated guess (TTD/TPD/PPD are defined nearby). Agent should abstain. max_rounds asserts a cheap refusal rather than budget-spinning over a defined-but-not-here acronym."
