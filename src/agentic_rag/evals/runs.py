@@ -54,6 +54,9 @@ def agent_config_snapshot(config: dict) -> dict:
     return {
         "enabled": enabled,
         "max_rounds": agent.get("max_rounds") if enabled else None,
+        # The action space the run used (A1) — records WHICH tools were available, so an
+        # A/B over the tool set is reproducible from the file alone.
+        "tools": agent.get("tools") if enabled else None,
     }
 
 

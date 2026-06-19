@@ -51,7 +51,7 @@ from agentic_rag.evals.runs import agent_config_snapshot, eval_run_path, retriev
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.agent.loop import build_answerer
 from agentic_rag.llm.provider import Usage, build_llm, role_model
-from agentic_rag.rag.answer import load_prompt
+from agentic_rag.rag.answer import Trajectory, load_prompt
 from agentic_rag.rag.retriever import build_retriever
 from agentic_rag.rag.vector_store import Hit
 
@@ -75,7 +75,8 @@ class QAResult:
     retrieved: List[Hit] = field(default_factory=list)   # chunks fed to the generator, for diagnosis
     controller_usage: Usage = field(default_factory=Usage)  # agent routing cost (system cost)
     generator_usage: Usage = field(default_factory=Usage)   # final-answer cost (system cost)
-    judge_usage: Usage = field(default_factory=Usage)       # judge token cost (instrument cost)
+    judge_usage: Usage = field(default_factory=Usage)        # judge token cost (instrument cost)
+    trajectory: Optional[Trajectory] = None  # agent process metrics (X1); None on the naive path
 
 
 def is_abstention(answer: str) -> bool:
@@ -192,7 +193,8 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: Optional[str] =
 
         result = QAResult(q, generated.answer, abstained, verdict, reason, generated.retrieved,
                           controller_usage=generated.controller_usage,
-                          generator_usage=generated.generator_usage, judge_usage=judge_usage)
+                          generator_usage=generated.generator_usage, judge_usage=judge_usage,
+                          trajectory=generated.trajectory)
         results.append(result)
         logger.info(f"  [{i:2d}/{len(questions)}] {q.id} {q.type:<10} {describe(result)}")
 
@@ -285,6 +287,16 @@ def report(results: List[QAResult], config: dict) -> dict:
                 f"(~{ctrl_total.calls / n:.1f}/Q) | generator {gen_total.total_tokens} in {gen_total.calls} call(s) "
                 f"| judge {judge_total.total_tokens} [instrument]")
 
+    # Trajectory axis (X1): HOW the agent worked, orthogonal to whether the answer was right.
+    # Present only on agentic runs (naive answers carry no trajectory).
+    trajectory_summary = aggregate_trajectory(results)
+    if trajectory_summary is not None:
+        logger.info(f"  trajectory: ~{trajectory_summary['avg_rounds']:.1f} round(s)/Q | "
+                    f"tool calls {trajectory_summary['tool_calls']} | "
+                    f"exits {trajectory_summary['exit_reasons']} | "
+                    f"tool_errors {trajectory_summary['tool_errors']} | "
+                    f"redundant searches {trajectory_summary['redundant_searches']}")
+
     return {
         "generator_model": generator_model,
         "judge_model": judge_model,
@@ -299,6 +311,39 @@ def report(results: List[QAResult], config: dict) -> dict:
         "end_to_end_success": end_to_end,
         "abstention_total": len(abstention),
         "abstained_correctly": len(abstained_correctly),
+        "trajectory": trajectory_summary,  # None on the naive path
+    }
+
+
+def aggregate_trajectory(results: List[QAResult]) -> Optional[dict]:
+    """Roll the per-question agent trajectories up into run-level process metrics (X1).
+
+    Returns None if no question carried a trajectory (a naive run) — so the metric simply
+    doesn't appear for the naive baseline, instead of reporting misleading zeros.
+    """
+    trajectories = [r.trajectory for r in results if r.trajectory is not None]
+    if not trajectories:
+        return None
+    n = len(trajectories)
+    tool_calls: dict = {}
+    exit_reasons: dict = {}
+    total_rounds = 0
+    total_errors = 0
+    total_redundant = 0
+    for t in trajectories:
+        total_rounds += t.rounds_used
+        total_errors += t.tool_errors
+        total_redundant += t.redundant_searches
+        exit_reasons[t.exit_reason] = exit_reasons.get(t.exit_reason, 0) + 1
+        for name, count in t.tool_calls.items():
+            tool_calls[name] = tool_calls.get(name, 0) + count
+    return {
+        "questions": n,
+        "avg_rounds": total_rounds / n,
+        "tool_calls": tool_calls,         # total invocations per tool across the run
+        "exit_reasons": exit_reasons,     # how runs ended: finish / budget / oscillation
+        "tool_errors": total_errors,      # controller actions that failed to parse/validate
+        "redundant_searches": total_redundant,
     }
 
 
@@ -337,6 +382,7 @@ def persist(summary: dict, results: List[QAResult], config: dict, version: str) 
             "expected_sources": r.q.expected_sources,
             "judge_reason": r.judge_reason,
             "usage": usage_record(r.controller_usage, r.generator_usage, r.judge_usage),
+            "trajectory": r.trajectory.as_dict() if r.trajectory else None,  # agent process (X1)
             "retrieved": retrieved,
         })
 

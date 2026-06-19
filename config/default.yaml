@@ -55,12 +55,18 @@ agent:
   # ON by default — won its matched A/B (DD-022). Flip to false for the naive baseline.
   enabled: true
   max_rounds: 3 # hard budget: max search rounds before a forced answer (circuit breaker)
-  # Final-answer evidence char cap (arrival-order trim). Originated as a Groq-6K-wall survival
-  # hack, but removing it on Gemini's ~1M context LOST the gate (.800->.725): keeping ALL
-  # evidence diluted answers (PARTIAL 7->10) even as grounding went perfect. So the trim now
-  # earns its place as a QUALITY filter — it keeps the early/on-topic chunks, drops late
-  # second-hop accretion (DD-023). Kept at 16000.
-  answer_char_budget: 16000
+  # The action space (A1). Default [search, finish] reproduces the pre-A1 champion, so an
+  # A/B that adds expand_document/list_sources isolates "richer action space" as the one
+  # variable. finish is always available even if omitted. Tool catalogue: agent/tools.py.
+  tools: [search, finish] # A/B candidate: [search, expand_document, list_sources, finish]
+  # Final-answer evidence char cap (arrival-order trim). 0 = OFF (keep all gathered evidence).
+  # NEW AGENTIC BASELINE: starts OFF. The trim originated as a Groq-6K-wall survival hack;
+  # under the PRIOR pure-RAG + simple-ReAct pipeline an A/B found it incidentally helped as a
+  # quality filter (DD-023: 0 lost .800->.725 by diluting answers). That result belongs to the
+  # old lineage — this agentic system (multi-tool; expand_document can dump a whole doc) has
+  # different evidence-volume dynamics, so the trim must re-earn its place. Re-run the A/B
+  # (0 vs 16000) on this pipeline before re-enabling.
+  answer_char_budget: 0
 
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist

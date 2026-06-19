@@ -19,6 +19,7 @@ dependencies = [
     "groq>=0.11",                   # LLM provider (judge) — Groq's gpt-oss as the cross-family judge
     "google-genai>=1.0",            # LLM provider (generator) — Gemini via the unified SDK
     "python-dotenv>=1.0",           # load GOOGLE_API_KEY / GROQ_API_KEY from a gitignored .env
+    "pydantic>=2.0",                # typed tool-arg schemas for the agent's tool registry (A1)
 ]
 
 [tool.setuptools.packages.find]

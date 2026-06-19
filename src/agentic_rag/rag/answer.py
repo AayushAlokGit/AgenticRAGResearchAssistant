@@ -30,6 +30,29 @@ from agentic_rag.rag.vector_store import Hit
 
 
 @dataclass
+class Trajectory:
+    """Process metrics for ONE agent run (X1 trajectory eval): HOW the agent reached the
+    answer, not just whether it was right. An agentic change (planning, a new tool) can hold
+    answer-correctness flat while halving cost/Q or eliminating redundant work — invisible to
+    the answer-correctness rung alone, visible here. The naive path leaves this None.
+    """
+    rounds_used: int = 0
+    exit_reason: str = ""             # finish | budget | oscillation
+    tool_calls: dict = field(default_factory=dict)  # tool name -> times invoked
+    tool_errors: int = 0             # actions that failed to parse/validate before dispatch
+    redundant_searches: int = 0      # searches that added no new evidence (spinning)
+
+    def as_dict(self) -> dict:
+        return {
+            "rounds_used": self.rounds_used,
+            "exit_reason": self.exit_reason,
+            "tool_calls": dict(self.tool_calls),
+            "tool_errors": self.tool_errors,
+            "redundant_searches": self.redundant_searches,
+        }
+
+
+@dataclass
 class AnswerResult:
     question: str
     answer: str
@@ -39,6 +62,7 @@ class AnswerResult:
     # them would hide which role the cost is in. Naive path has no controller -> stays zero.
     controller_usage: Usage = field(default_factory=Usage)
     generator_usage: Usage = field(default_factory=Usage)
+    trajectory: Optional["Trajectory"] = None  # agent process metrics (X1); None for naive path
 
 
 def load_prompt(config: dict, name: str) -> str:
