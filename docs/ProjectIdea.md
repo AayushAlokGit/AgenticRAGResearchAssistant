@@ -51,6 +51,5 @@ Ingest the corpus, store embeddings in a vector DB, wire a single-tool agent loo
 ---
 
 ### Notes for Claude Code
-- Hand-roll the agent loop and context assembly first (understand what frameworks abstract) before adopting LangGraph or similar.
 - Keep prompts, configs, and corpus versioned so single changes can be A/B tested.
 - Add the provider-fallback layer and tracing early — later modules depend on being able to measure.

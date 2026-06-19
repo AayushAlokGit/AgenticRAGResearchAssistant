@@ -4,7 +4,7 @@
 
 A from-scratch, learning-focused build of a production-grade agentic RAG system that
 answers complex, multi-hop questions over an evolving corpus and gets smarter across
-sessions. Full project spec is in `ProjectIdea.md`.
+sessions. Full project spec is in `docs/ProjectIdea.md`.
 
 The corpus is **the user's own documentation** (not yet written). Until it exists, we
 seed with a small real document set (e.g. the `DocumentationRetrievalMCPServer/docs`
@@ -47,7 +47,7 @@ Ship a deliberately naive end-to-end version first, then attack the five modules
 order, **re-running the eval set after each change so every technique earns its place.**
 The change → measure → keep-or-revert loop is the real skill being practiced.
 
-Five modules (see `ProjectIdea.md` for detail), built in order:
+Five modules (see `docs/ProjectIdea.md` for detail), built in order:
 1. RAG substrate — ingestion/chunking, hybrid retrieval, reranking, query transformation, incremental re-indexing, citations, "not enough info" path.
 2. Agentic layer — retrieve→reason→retrieve loops with budgets and stop conditions.
 3. Context engineering — token budgeting, dedup, compression, compaction, ordering.

@@ -150,7 +150,7 @@ generator/judge LLMs need API keys.
 | File / dir | Purpose |
 | --- | --- |
 | `DESIGN_DECISIONS.md` | ADR-style log of every deliberate choice + A/B result. **Start here.** |
-| `ProjectIdea.md` | Full project spec — the 5 modules and the eval-driven build approach. |
+| `docs/ProjectIdea.md` | Full project spec — the 5 modules and the eval-driven build approach. |
 | `CLAUDE.md` | Working agreement; encodes the learning-first goal. |
 | `docs/` | Teaching docs — general-first write-ups of chunking, reranking, evals, context. |
 | `config/`, `prompts/`, `evals/datasets/` | Versioned knobs, prompts, and the eval set. |

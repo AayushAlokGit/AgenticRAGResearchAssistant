@@ -1,7 +1,7 @@
 """Agentic RAG Research Assistant.
 
 A from-scratch, learning-focused agentic RAG system. Subpackages map to the five
-modules in ProjectIdea.md, built in order:
+modules in docs/ProjectIdea.md, built in order:
 
     llm      - provider interface + fallback router (part of the harness)
     rag      - module 1: RAG substrate (ingestion, chunking, retrieval)

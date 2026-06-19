@@ -13,5 +13,5 @@ chunks), `embeddings.py` (local all-MiniLM-L6-v2), `vector_store.py` (ChromaDB),
 Retrieval: `retriever.py` (dense / hybrid + RRF fusion) and `bm25.py` (BM25 via
 rank_bm25) — hybrid is the eval-gated default (DD-009). Naive answer pipeline:
 `answer.py` (retrieve -> cited answer, abstains when context is insufficient, DD-010).
-Reranking + the agentic loop still to come — see ProjectIdea.md (modules 1-2).
+Reranking + the agentic loop still to come — see docs/ProjectIdea.md (modules 1-2).
 """
