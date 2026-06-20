@@ -48,6 +48,17 @@ This is the single most common beginner mistake: imagining a "retrieval dataset"
 a separate "agent dataset." There's one dataset; there are several meters pointed at
 it.
 
+The real payoff comes when those meters are **surfaced together in one run output**,
+not scattered across harnesses you invoke on different days. Side by side, run over
+run, the numbers stop being a headline and become a *diagnosis*: a regression turns
+**attributable** (which component's metric moved?) and improvement turns
+**directional** (spend the next change on the axis furthest from its ceiling).
+Separate dashboards can't reveal that the answer got *more correct because retrieval
+improved while the controller took fewer hops* — one co-located run can. That joint
+view is what converts "the score changed" into "here is *what* changed and *where* to
+work next," and it's worth the wiring to pull every component's metric into a single
+run rather than leaving each in its own script.
+
 ### P3. Three metric families for anything with a controller.
 
 The moment a system *decides what to do* (loop again? call a tool? stop? refuse?),
