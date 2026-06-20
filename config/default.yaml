@@ -26,6 +26,14 @@ retrieval:
     # dense (vector) + BM25 (keyword), fused by Reciprocal Rank Fusion.
     rrf_k: 60 # RRF damping constant (standard default)
     candidate_k: 20 # chunks pulled from EACH retriever before fusing down to top_k
+  multi_query:
+    # RAG-Fusion (DD-034): expand each query into facet-diverse, doc-style variants
+    # (prompts/query_reformulate.md), retrieve each via the base, RRF-fuse the pool, then
+    # rerank. Targets the retrieval-cluster failures where the missed doc IS retrievable for a
+    # well-aimed query but not the controller's phrasing (and enumeration Qs that no single
+    # query can cover). Costs one reformulation LLM call per UNIQUE query (cached per run).
+    enabled: false # A/B vs the B1 baseline; off until it earns its place
+    n_queries: 4 # variants to GENERATE per query (the original is added on top, then deduped)
   rerank:
     # Stage 2: cross-encoder re-scores (query, chunk) pairs for precision (DD-014).
     enabled: true

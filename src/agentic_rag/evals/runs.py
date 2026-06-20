@@ -72,6 +72,8 @@ def retrieval_config_snapshot(config: dict) -> dict:
     rerank_on = rerank.get("enabled", False)
     parent = retrieval.get("parent_expansion", {})
     parent_on = parent.get("enabled", False)
+    multi_query = retrieval.get("multi_query", {})
+    mq_on = multi_query.get("enabled", False)
     return {
         "embedding": config["embedding"]["model"],
         "chunk_strategy": ingestion.get("chunking", {}).get("strategy", "fixed"),
@@ -86,4 +88,6 @@ def retrieval_config_snapshot(config: dict) -> dict:
         "parent_window": parent.get("window") if parent_on else None,
         "hybrid_rrf_k": retrieval.get("hybrid", {}).get("rrf_k"),
         "hybrid_candidate_k": retrieval.get("hybrid", {}).get("candidate_k"),
+        "multi_query": mq_on,
+        "multi_query_n": multi_query.get("n_queries") if mq_on else None,
     }

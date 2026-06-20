@@ -67,3 +67,14 @@ A **separate lineage** from the table above (that one is the RAG substrate on th
 **Lesson (the session's big one):** all four failed to beat plain B1. D first *looked* like +0.16 corr — that was a **judge artifact** (the llama judge degenerated to all-PARTIAL faith=0.000 and was generous on correctness; the *same answers* scored 0.840 by llama vs 0.520 by gemini-flash-lite). **A fluent wrong *measurement* looks like a real result** — our noise floor (judge-choice ±0.32, run-to-run ±0.12 across answer-sets) dwarfed every effect we chased. Reliable coverage assessment needs full evidence text (the generator's view), which the cheap routing controller structurally lacks — and even given it (D), the gain didn't survive a trustworthy gauge.
 
 **Next lever (diagnosis-gated):** classify the 10 reliable failures (3 DEAD + 7 PARTIAL) as *evidence-gathered-but-dropped* (→ generator/synthesis lever: pro-generator A/B per DD-025, or answer prompt) vs *evidence-never-retrieved* (→ retrieval lever). Don't build before that split is known.
+
+## Levers tried since the baseline
+
+| # | Change | Result | Verdict | Lesson |
+|---|---|---|---|---|
+| v2-1 | **Answer-prompt abstention guard** (don't abstain when the answer is in context) | a23 false-abstention 0→1.0; headline flat within ±0.02; SOLID abstentions held | ✅ kept (commit 4f8bc15) | Fixed a real defect invisible to the headline; the why/how clause bundled with it was reverted (caused a10 over-elaboration). |
+| v2-2 | **Multi-query / RAG-Fusion** (LLM facet-variants → RRF, retrieval-layer) | smoke-falsified: flash emits question-paraphrases, not corpus-grounded facet queries; missed docs still miss | ❌ not run, code off (DD-034) | **Query reformulation can't decompose into facets it's never seen** — fixes phrasing on known concepts, can't *discover* corpus structure. smoke→fix→re-smoke saved the A/B spend. |
+| v2-3 | **Failure audit** (free) | ~half the 8 failures were the flash-lite judge under-grading (a10 misread, a15/a14/a24 over-strict); true correctness ~**0.70** not 0.59 | — (DD-035) | The cheap judge reads **biased-low**, not just noisy. Audit the gauge before concluding the system is stuck. |
+| v2-4 | **Pro-ceiling probe** (controller+gen flash→**pro**, judge flash-lite→**flash**, 1 run) | correctness **0.700**, faith 0.826, **0 INCORRECT** | — (DD-035) | Pro **fixes synthesis** (a03/a10/a14/a16 ↑ — a model ceiling) but **not breadth** (a02/a05/a07/a24/a25 still 0.50 — architectural). |
+
+**Where it stands:** best-possible state ≈ **0.70** under the current architecture. The remaining bottleneck is **one architectural problem — breadth/enumeration coverage** (list all items/docs across many chunks under top_k=5); no model upgrade and no query-reformulation trick has touched it. That is the next target.
