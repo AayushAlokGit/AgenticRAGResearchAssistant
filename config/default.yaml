@@ -42,12 +42,15 @@ agent:
   # ON by default — won its matched A/B (DD-022). Flip to false for the naive baseline.
   enabled: true
   max_rounds: 5 # hard budget: max search rounds before a forced answer (circuit breaker)
-  # Tool catalogue: agent/tools.py.
-  # expand_around_chunk (DD-031, PENDING A/B — not yet earned): surgical ±2-neighbour coverage
-  # for "right doc, wrong chunk" misses (a16). Intended middle ground between search and whole-doc
-  # expand_document; a18 is its meter. Confirm it helps (and whether it makes expand_document
-  # redundant) on the v2 run before promoting to a real DD.
-  tools: [search, expand_document, expand_around_chunk, list_sources, finish]
+  # Tool catalogue: agent/tools.py. Enabled set below is the controller's action space —
+  # every tool here taxes routing on EVERY question (bigger system prompt = noisier tool choice).
+  # DD-031 LANDED: both expand_* tools DROPPED from the action space (B1, lean menu). Measured on
+  # the v2 set (n=3): adding `expand_around_chunk` robustly REGRESSED 5 v1-solid Qs (a02/a05/a10/a12/a17)
+  # while never firing reliably on its own meter (a18) and never fixing its target (a16, 0/3) — net
+  # NEGATIVE. `expand_document` fired ZERO times on all 3 of its breadth meters (a05/a06/a12) across
+  # all runs — provably dead weight (search already carries breadth). Both kept in the catalogue,
+  # config-gated OFF (cf. parent_expansion), re-enable behind a properly-prompted A/B if ever needed.
+  tools: [search, list_sources, finish]
   # Final-answer evidence char cap (arrival-order trim). 0 = OFF (keep all gathered evidence).
   # NEW AGENTIC BASELINE: starts OFF. The trim originated as a Groq-6K-wall survival hack;
   # under the PRIOR pure-RAG + simple-ReAct pipeline an A/B found it incidentally helped as a
