@@ -53,6 +53,14 @@ logger = logging.getLogger(__name__)
 # A3 we'll instead feed the error back as an observation so the agent can self-correct.
 CONTROLLER_MAX_ATTEMPTS = 3
 
+# How many CONSECUTIVE redundant retrievals (a search that re-found only evidence we already
+# hold) we tolerate before tripping the oscillation guard and stopping. One redundant search
+# is a local stumble — the agent's phrasing missed, and the right move is to REFORMULATE, not
+# abort (a multi-hop question often needs a second, differently-worded retrieval). We only
+# conclude the agent is genuinely STUCK after this many in a row. The count resets to 0 on any
+# retrieval that adds new evidence, so a productive round clears the slate.
+OSCILLATION_PATIENCE = 2
+
 # Chars of each chunk shown to the CONTROLLER in its router view — enough to recognize what
 # was found, small enough that the controller prompt stays bounded across many rounds.
 CONTROLLER_SNIPPET_CHARS = 300
@@ -253,7 +261,8 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     controller_usage = Usage()
     tool_calls: dict = {}        # tool name -> times invoked (trajectory)
     tool_errors = 0              # parse/validate failures across all rounds (trajectory)
-    redundant_searches = 0       # retrievals that re-found only old evidence (trajectory)
+    redundant_searches = 0       # retrievals that re-found only old evidence (trajectory, cumulative)
+    consecutive_redundant = 0    # redundant retrievals IN A ROW; resets on progress (oscillation guard)
 
     for round_index in range(max_rounds):
         rounds_left = max_rounds - round_index
@@ -279,19 +288,43 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         logger.info("agent: action=%s args={%s}", tool.name, args_repr)
         result = tool.run(decision.args, ctx)
         new_hits = scratchpad.add(result.hits)
-        steps.append(AgentStep(decision.thought, tool.name, args_repr, result.observation, len(new_hits)))
-        logger.info("agent: -> %s | +%d new chunk(s) | scratchpad=%d",
-                    result.observation.splitlines()[0], len(new_hits), len(scratchpad))
 
-        # Stop condition (oscillation guard): a RETRIEVAL that returned hits but none NEW means
-        # we re-found only old evidence — spinning. Answer with what we have rather than burn
-        # the budget. (A no-hit tool like list_sources legitimately adds nothing, so we only
-        # trip the guard when the tool DID return hits and all were duplicates.)
-        if result.hits and not new_hits:
+        # A retrieval that returned hits but added NOTHING new re-found only evidence we already
+        # hold. Detect it once here; it drives both the controller feedback (next) and the
+        # oscillation streak (below). A no-hit tool like list_sources legitimately adds nothing,
+        # so a round is "redundant" only when the tool DID return hits and all were duplicates.
+        is_redundant = bool(result.hits and not new_hits)
+
+        # FEED THE SIGNAL BACK: append a note to the observation the controller will see next
+        # round (via format_history). Without this, the stored observation just says "found N
+        # chunks", so at temperature 0 the controller has no reason to change course and may
+        # re-issue the same query. Telling it "these were duplicates — reformulate/switch/finish"
+        # is what turns the extra round Change 1 bought into an actual recovery.
+        observation = result.observation
+        if is_redundant:
+            observation += ("\n[NOTE: NO NEW EVIDENCE FOUND. Reformulate with DIFFERENT terms, try another tool, or"
+                            " finish if you already have enough to answer.]")
+        steps.append(AgentStep(decision.thought, tool.name, args_repr, observation, len(new_hits)))
+        logger.info("agent: -> %s | +%d new chunk(s) | scratchpad=%d",
+                    observation.splitlines()[0], len(new_hits), len(scratchpad))
+
+        # Stop condition (oscillation guard): ONE redundant round is a local stumble (bad
+        # phrasing), not proof the agent is stuck — so we count CONSECUTIVE redundant rounds and
+        # only stop once they reach OSCILLATION_PATIENCE. Any retrieval that DID add evidence
+        # resets the count, so the trip means "several unproductive rounds in a row", not "one
+        # duplicate ever".
+        if is_redundant:
             redundant_searches += 1
-            logger.info("agent: retrieval re-found only known evidence — stopping early (oscillation guard)")
-            exit_reason = "oscillation"
-            break
+            consecutive_redundant += 1
+            if consecutive_redundant >= OSCILLATION_PATIENCE:
+                logger.info("agent: %d redundant retrieval(s) in a row — stopping (oscillation guard)",
+                            consecutive_redundant)
+                exit_reason = "oscillation"
+                break
+            logger.info("agent: retrieval re-found only known evidence (%d/%d before stop) — continuing",
+                        consecutive_redundant, OSCILLATION_PATIENCE)
+        elif new_hits:
+            consecutive_redundant = 0  # progress clears the slate
 
     n_actions = len(steps)
     logger.info("agent: loop done — %d round(s) used, calls=%s, %d chunk(s) gathered, exit=%s",

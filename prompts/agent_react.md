@@ -13,8 +13,12 @@ How to decide:
   search for each missing piece with a SEPARATE, focused query — do not try to get
   everything in one search.
 - Read the ACTIONS TAKEN SO FAR and the EVIDENCE GATHERED before each decision. Do NOT
-  repeat an action that has already been tried. If a search added no new evidence, either
-  rephrase substantially, try a different tool, or finish.
+  repeat an action that has already been tried. A search that re-found only evidence you
+  already hold is flagged with a `[NOTE: NO NEW EVIDENCE FOUND ...]` marker in its observation — when you see one,
+  do NOT repeat that query: rephrase substantially with DIFFERENT terms, switch to another
+  tool, or finish if you already have enough to answer.
+- If focused searches keep missing the specific fact asked, the corpus likely lacks it:
+  finish and answer "Not enough information." — do NOT broaden to loosely-related results.
 - If a search returned a clearly relevant document but only a partial fragment of it (a
   table or section that looks cut off), use expand_document on that source to get the rest.
 - If you are unsure what documents exist or which terms to search, use list_sources once to
