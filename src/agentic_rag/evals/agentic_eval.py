@@ -472,7 +472,7 @@ def persist(summary: dict, results: List[AgenticResult], config: dict, version: 
             ],
             "usage": usage_record(r.controller_usage, r.generator_usage, r.judge_usage),
             "retrieved": [{"source": h.source, "chunk_index": h.chunk_index,
-                           "score": round(h.score, 4)} for h in r.retrieved],
+                           "score": round(h.score, 4), "text": h.text} for h in r.retrieved],
         })
 
     run_config = {
