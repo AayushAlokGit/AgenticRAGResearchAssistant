@@ -1,4 +1,4 @@
-# Agentic eval set — v1
+# Agentic eval set — v2
 #
 # The CAPABILITY layer that complements seed.yaml's REGRESSION layer, organized by AGENT
 # capability. See docs/evals/AGENT_EVAL_SETS.md for the taxonomy, design rationale, and the
@@ -7,8 +7,9 @@
 # ── Schema ────────────────────────────────────────────────────────────────────────────────
 # Outcome fields (id, type, question, match, expected_sources, should_abstain, expected_answer,
 # notes) + two optional agentic fields:
-#   capability : single_shot_efficiency | decomposition | tool_selection | grounded_stopping.
-#                (adaptive_recovery deferred to A3 — see gap note below.)
+#   capability : single_shot_efficiency | decomposition | tool_selection | grounded_stopping |
+#                adaptive_recovery. (Free-text tag — the loader does NOT constrain it; keep it
+#                aligned with the taxonomy in AGENT_EVAL_SETS.md.)
 #   trajectory : OPTIONAL loose L1 path assertion, scored as a SEPARATE diagnostic (PASS/FAIL),
 #                never folded into correctness. Keys map onto the run Trajectory:
 #                  expects_tool  : tool_calls[tool] >= 1    (binds to the CODE name — DD-027)
@@ -18,17 +19,31 @@
 #
 # ── Capability coverage (taxonomy → questions) ────────────────────────────────────────────
 #   single_shot_efficiency : a01, a02 (RAG) · a11, a15 (claims) · a17 (cross-domain homonym)
-#   decomposition          : a03 (RAG)       · a10, a14 (claims) · a16 (MCP-server, 2 docs)
-#   tool_selection         : a05, a06 (RAG expand_document) · a07 (list_sources) · a12 (claims expand_document)
-#   grounded_stopping      : a08, a09 (RAG abstain)         · a13 (claims abstain)
+#   decomposition          : a03 (RAG) · a10, a14 (claims) · a16 (MCP-server) · a22 (BRIDGE) · a24 (conflict)
+#   tool_selection         : a05, a06, a12 (expand_document) · a07, a25 (list_sources) · a18 (expand_around_chunk)
+#   grounded_stopping      : a08, a09 (RAG abstain) · a13 (claims abstain) · a20 (oscillation) · a23 (PARTIAL)
+#   adaptive_recovery      : a19 (distractor → reformulate)        [NEW in v2; outcome-gradable today]
+#   (budget-exit stress)   : a21 (exercises exit_reason==budget)   [trajectory-only intent; see notes]
 #
 # ── Notes ─────────────────────────────────────────────────────────────────────────────────
 #   - a04 is intentionally VACANT — ids are stable handles, never renumbered (seed.yaml convention).
 #   - extraction-improvement-roadmap.md is DELIBERATELY not targeted (volatile open-issues log).
-#   - Known gap: adaptive_recovery (first search fails/distracts → agent reformulates) is
-#     DEFERRED to A3, when tool errors become recoverable observations.
+#   - v2 added a18–a25 to close coverage gaps (AGENT_EVAL_SETS.md A1: a capability with NO example
+#     is one you fly blind on). Several are EXPECTED to fail/flag at first — that is intended
+#     headroom (A6), not a regression. What v2 newly covers:
+#       * a18 — expand_around_chunk had ZERO cases despite being a live default tool (config:48).
+#       * a19 — adaptive_recovery: first seeded case (was deferred to A3). Outcome-gradable now;
+#               full tool-ERROR recovery still waits for A3, so trajectory here is a SOFT probe.
+#       * a20/a21 — exit-condition coverage (oscillation / budget). These deliberately BEND A3's
+#               "assert the good path": for a pathological/oversized input the invariant worth
+#               asserting is WHICH circuit-breaker catches it. A truly-ideal clean finish reads
+#               as a BENIGN trajectory miss here (separate diagnostic axis, never an outcome fail).
+#       * a22 — dependent/BRIDGE multi-hop (hop-2 query needs hop-1's answer) vs the existing
+#               PARALLEL multi-hops a03/a10/a14/a16.
+#       * a23 — PARTIAL answerability (answer AWW/CR, abstain ONLY on NLE) — selective honesty.
+#       * a24 — CONFLICTING evidence (the Azure vs ChromaDB architecture docs disagree).
 
-version: 1
+version: 2
 corpus: ./corpus            # 22-doc snapshot (RAG-server docs + claims-ETL docs)
 
 questions:
@@ -258,4 +273,127 @@ questions:
     trajectory:
       max_rounds: 4
       expects_exit: finish
-    notes: "Plausible-but-undefined (claims domain): claims file analysis.md §10 lists 'NLE — value present (34.92) — meaning to confirm'. The abbreviation IS in the corpus but its expansion is explicitly unknown, tempting a fabricated guess (TTD/TPD/PPD are defined nearby). Agent should abstain. max_rounds asserts a cheap refusal rather than budget-spinning over a defined-but-not-here acronym."
+    notes: "Plausible-but-undefined (claims domain): claims file analysis.md §10 lists 'NLE — value present (34.92) — meaning to confirm'. The abbreviation IS in the corpus but its expansion is explicitly unknown, tempting a fabricated guess (defined sibling fields AWW/CR/MMI sit nearby and bait a pattern-match). Agent should abstain. max_rounds asserts a cheap refusal rather than budget-spinning over a defined-but-not-here acronym."
+
+  # ═══════════════════════════════════════════════════════════════════════════════════════════
+  # v2 COVERAGE-GAP ADDITIONS (a18–a25). Each closes a hole the v1 set was blind on. Failing or
+  # flagging at first is EXPECTED headroom (A6), not a regression. See the header notes per id.
+  # ═══════════════════════════════════════════════════════════════════════════════════════════
+
+  # ── tool_selection — expand_around_chunk (a LIVE default tool with no prior case) ──────────
+  - id: a18
+    type: factual
+    capability: tool_selection
+    question: "In this project's reranking A/B, what recall@1, recall@3, recall@5 and MRR did hybrid+rerank reach versus hybrid alone, AND which specific false abstentions did adding the reranker eliminate, and why were those questions answerable once reranked?"
+    match: any
+    expected_sources:
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "Hybrid -> hybrid+rerank: recall@1 0.724 -> 0.759; recall@3 0.793 -> 0.931; recall@5 0.897 -> 1.000; MRR 0.903 -> 0.948. Adding the cross-encoder reranker eliminated all three end-to-end false abstentions (q01, q25, q26): in each, the fact-bearing chunk WAS in the stage-1 candidate pool but ranked below top-5, so the generator saw no usable evidence and refused; the cross-encoder re-scored the pool and lifted that chunk into the top-5, so the generator could finally answer. That is the chunk-level fix document-level recall couldn't even see — the precise problem stage-2 reranking exists to solve."
+    trajectory:
+      expects_tool: expand_around_chunk
+    notes: "expand_around_chunk had ZERO eval cases despite shipping in the default tool set (config:48, DD-031) — so any A/B tuning NEIGHBOUR_WINDOW or adding/removing it reads FLAT for the wrong reason (AGENT_EVAL_SETS.md A1). The answer needs RERANKING §9's results TABLE plus the false-abstention PARAGRAPH directly below it — a local neighbourhood that a single top-k snippet won't both hold, while expand_document (whole §1–§9 doc) is wasteful overkill. So the surgical ±2-neighbour pull is the uniquely-right move. SOFT discriminator (same caveat as a05/a06): a path could scrape it via re-search; a trajectory miss is a flag, not an auto-fail. Outcome is fully gradable today regardless of path."
+
+  # ── adaptive_recovery — first seeded case (capability was deferred to A3) ──────────────────
+  - id: a19
+    type: factual
+    capability: adaptive_recovery
+    question: "In the vector database's approximate-nearest-neighbour index, which single query-time knob is the dial that trades a little recall for more speed?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "ef_search — the HNSW query-time candidate-list size, described as the live recall<->latency dial (VECTOR_DB_INTERNALS §6). It is distinct from M and ef_construction (which are BUILD-time knobs), and distinct from the reranker's candidate_k, which is a different STAGE's latency-vs-quality knob, not the index's."
+    trajectory:
+      min_searches: 2
+    notes: "ADAPTIVE-RECOVERY probe (first seeded case; capability was deferred to A3). The natural first query ('recall vs speed/latency dial') strongly surfaces RERANKING's candidate_k — also a latency-vs-quality dial — a genuine CROSS-DOC distractor pulling toward the wrong stage. A good path notices candidate_k belongs to the reranker, not the ANN index, and REFORMULATES toward HNSW query-time params to land ef_search. min_searches=2 is a SOFT reformulation probe: a 1-search path that still lands ef_search is fine (trajectory miss = flag). Outcome is gradable today; full tool-ERROR recovery (a failed/erroring tool fed back as a retryable observation) still waits for A3."
+
+  # ── grounded_stopping — exit coverage: OSCILLATION (the stop-condition DD-029 just redesigned) ─
+  - id: a20
+    type: abstention
+    capability: grounded_stopping
+    question: "What ef_search value does this project benchmark its HNSW index at, and what recall@k did that specific setting achieve?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The corpus names ef_search as HNSW's query-time recall<->latency dial but gives NO benchmarked value for it — it even notes HNSW is overkill at the current 262-chunk scale, where brute force suffices. The only recall@k table in the corpus is for the cross-encoder RERANKER A/B (RERANKING §9), not for any ef_search/HNSW setting. So neither the ef_search value nor a recall@k for it exists to report."
+    trajectory:
+      max_rounds: 5
+      expects_exit: oscillation
+    notes: "EXIT-CONDITION coverage for the oscillation guard (the stop-condition DD-029 just redesigned, with NO eval watching it). Engineered to be pathological: the answer is absent AND lexically scattered, so reformulations ('ef_search value', 'HNSW recall numbers') keep re-finding the SAME few chunks (the VECTOR_DB knobs blurb; the RERANKING recall table as a wrong-borrow distractor) -> consecutive_redundant should reach OSCILLATION_PATIENCE and trip. This deliberately BENDS A3's 'assert the good path': for a pathological input the invariant worth asserting is that a CIRCUIT-BREAKER catches it before budget death. An even-better agent abstains via a clean finish without looping — that reads as a BENIGN trajectory miss here, never an outcome fail (outcome only needs the abstention)."
+
+  # ── exit coverage: BUDGET exhaustion (trajectory-intent; oversized productive decomposition) ─
+  - id: a21
+    type: multi_hop
+    capability: decomposition
+    question: "Compile a complete cross-corpus catalogue of the retrieval stack's building blocks: every ANN index family the vector-DB internals doc lists, every reranker family the reranking doc distinguishes, and every chunking-strategy family the chunking doc defines — give each item a one-line trade-off."
+    match: all
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+      - RERANKING.md
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "ANN index families (VECTOR_DB §6-7): Flat (exact brute force, correct baseline to ~10^5); IVF (k-means cells, search nearest few via nprobe — cheap memory, boundary misses); PQ (quantize/compress vectors to bytes — ~10-50x less memory, approximate; often IVF-PQ for billion-scale); HNSW (hierarchical small-world graph navigated coarse->fine — great recall-at-low-latency, update-tolerant, costs RAM); ScaNN/DiskANN (SIMD- or SSD-resident variants). Reranker families (RERANKING §7): cross-encoders (neural, pointwise — score each pair alone, what this project uses); Learning-to-Rank (gradient-boosted trees like LambdaMART over features — dominant in web/ecommerce); LLM rerankers (listwise — prompt an LLM to order the whole set, highest quality/cost). Chunking families (CHUNKING §4, A-E): A size-based; B structure-aware; C meaning-based; D decouple retrieval-unit != generation-unit (parent-child / sentence-window); E context-preserving embeddings (contextual retrieval, late chunking, metadata enrichment)."
+    trajectory:
+      min_searches: 3
+      expects_exit: budget
+    notes: "EXIT-CONDITION coverage for budget exhaustion. Oversized but genuinely answerable across THREE docs with many independent sub-items, so each retrieval keeps adding NEW evidence (oscillation never trips on progress) and the agent tends to keep productively gathering past max_rounds=5 -> exit_reason==budget. Same A3-bending caveat as a20: budget exhaustion is NOT the ideal path — an agent that decomposes efficiently and finishes early reads as a BENIGN trajectory miss. Outcome may land PARTIAL given the breadth (match:all scores partial coverage); that is expected, the case exists to exercise the budget exit and the operational round/token meters."
+
+  # ── decomposition — BRIDGE (sequentially dependent) multi-hop, vs the existing parallel ones ─
+  - id: a22
+    type: multi_hop
+    capability: decomposition
+    question: "The Normalizer deliberately leaves note-BODY dates as raw text to protect one specific downstream verification check. Name that check, then identify which kind of extractor depends on it and explain what would break in that extractor if the body text were rewritten."
+    match: all
+    expected_sources:
+      - normalizer.md
+      - extractor.md
+    should_abstain: false
+    expected_answer: "The check is the evidence_quote substring verification: the LLM extractor must emit an evidence_quote that is a VERBATIM substring of the note body, and a post-LLM check confirms the quote actually appears in the body. The LLM extractors depend on it (the general-path AppointmentExtractor and the ReturnToWorkExtractor — the reading-comprehension extractors, not the deterministic rule extractors). If the Normalizer rewrote body text (e.g. reformatting an in-body date or a dash), the model's copied evidence_quote would no longer match the stored body, the substring check would fail, and the extraction would be rejected / lose its auditable provenance — which is exactly why the Normalizer parses the HEADER date but leaves BODY text untouched."
+    trajectory:
+      min_searches: 2
+    notes: "BRIDGE multi-hop (sequentially DEPENDENT), the flavor the v1 set lacked: hop-2's query ('which extractor relies on THAT check') is unformulatable until hop-1 surfaces that the protected check IS the evidence_quote substring check. Contrast the PARALLEL multi-hops a03/a10/a14/a16, where each sub-fact is independently retrievable in any order. normalizer.md §3.2/§7 names why body dates stay raw (evidence_quote fidelity); extractor.md ties that fidelity to the LLM extractors. match:all so retrieving only one side scores partial."
+
+  # ── grounded_stopping — PARTIAL answerability (answer the known parts, abstain on the unknown) ─
+  - id: a23
+    type: factual
+    capability: grounded_stopping
+    question: "In the claims file's financial-reserves section, what do each of AWW, CR, and NLE stand for?"
+    match: all
+    expected_sources:
+      - claims file analysis.md
+    should_abstain: false
+    expected_answer: "AWW stands for average weekly wage and CR for compensation rate (both defined in claims file analysis.md §10, with example values). NLE is NOT defined in the corpus: it appears as a present value (e.g. 34.92) explicitly marked 'meaning to confirm', so its expansion is unknown and must not be guessed. A correct answer defines AWW and CR and abstains SPECIFICALLY on NLE — partial answer, not blanket refusal and not a fabricated NLE expansion."
+    notes: "PARTIAL answerability / selective honesty — the hardest abstention shape and absent from v1 (where abstention was all-or-nothing). Two failure modes it catches: (1) fabricating an NLE expansion to look complete; (2) OVER-abstaining on the whole question because one part is unknown. should_abstain is FALSE because the question is mostly answerable, so the case ALSO stress-tests is_abstention: a good partial answer ('AWW=..., CR=..., but NLE is undefined in the docs') must NOT be miscounted as a false abstention. (NB: TTD/TPD/PPD are only LISTED as benefit-type abbreviations in §10, never expanded — corrected the a13 note accordingly — so AWW/CR are the right defined anchors here.)"
+
+  # ── decomposition — CONFLICTING evidence across two architecture docs ──────────────────────
+  - id: a24
+    type: multi_hop
+    capability: decomposition
+    question: "What vector store and embedding model does the documentation-retrieval MCP server use, and how many search tools does it expose?"
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "The corpus documents TWO architecture variants of the same MCP server and they DISAGREE. The Azure variant (01-Architecture) uses Azure Cognitive Search with Azure OpenAI text-embedding-ada-002 (1536-dimensional) and exposes 4 search tools. The local variant (02-Architecture) uses ChromaDB with local Sentence-Transformers all-MiniLM-L6-v2 (384-dimensional) and exposes 5 search tools. 02 states the system underwent a 'complete migration from Azure to ChromaDB', so the ChromaDB/local stack is the CURRENT/primary one and the Azure stack is its superseded predecessor. A correct answer surfaces BOTH and the migration relationship rather than silently reporting just one."
+    trajectory:
+      min_searches: 2
+    notes: "CONFLICTING-EVIDENCE probe (absent from v1). Two corpus docs answer the same question differently (Azure/ada-002/1536-dim/4-tools vs ChromaDB/MiniLM/384-dim/5-tools). The failure mode is silently picking whichever variant ranks first and presenting it as THE answer; the right behavior is to recognise the conflict and RESOLVE it via the migration note (02 supersedes 01). Reuses docs a07/a16 touch, but the novel axis is conflict-surfacing, not retrieval recall. match:all so reporting only one variant scores partial."
+
+  # ── tool_selection — list_sources (second case; corpus-shape question) ─────────────────────
+  - id: a25
+    type: factual
+    capability: tool_selection
+    question: "Treating the corpus as a whole, which of its documents are step-by-step SETUP or operational how-to guides, as opposed to conceptual technique explainers or architecture overviews?"
+    match: any
+    expected_sources:
+      - MCP_SERVER_SETUP.md
+      - DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB.md
+      - CHROMADB_DATA_VIEWING_GUIDE.md
+      - AZURE_EMBEDDING_MIGRATION_GUIDE.md
+    should_abstain: false
+    expected_answer: "The setup / operational how-to guides are the documents whose role is procedural: MCP_SERVER_SETUP.md, DOCUMENT_UPLOAD_SETUP_FOR_CHROMADB.md, CHROMADB_DATA_VIEWING_GUIDE.md, AZURE_EMBEDDING_MIGRATION_GUIDE.md (and the upload/metadata operational notes DOCUMENT_UPLOAD_ANALYSIS.md, EXTRACTING_FILE_METADATA.md). These contrast with the conceptual technique explainers (CHUNKING.md, RERANKING.md, VECTOR_DB_INTERNALS.md, LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md) and the architecture overviews (01-/02-Architecture), and with the separate claims-pipeline ETL set."
+    trajectory:
+      expects_tool: list_sources
+    notes: "Second list_sources case (a07 was the only one, and a07's note flags it as a soft discriminator). A question ABOUT THE SET of documents — sorting the corpus by document ROLE — is naturally answered by SEEING the corpus via list_sources, then classifying by filename/role, rather than by content search. SOFT discriminator (like a07): a content search for 'setup' also surfaces these, so the primary test is whether the controller CHOOSES to orient via list_sources; retrieval recall is secondary (the answer is a filename survey, classification is filename-driven). match:any keeps grading lenient on the exact partition."

@@ -194,7 +194,7 @@ diagnostic** (trajectory PASS/FAIL), never mixed into the correctness rate (A3/A
 > **Note — `expects_tool` binds to the tool's *code name*, on purpose (DD-027).**
 > This couples the eval case to the implementation identifier in `agent/tools.py`
 > rather than to a stable capability label — exactly the implementation-vs-interface
-> coupling Principle A3 warns about. We accept it deliberately: with only four
+> coupling Principle A3 warns about. We accept it deliberately: with only five
 > hand-rolled tools the name↔capability mapping is ~1:1, so the looser alternatives (a
 > registry-owned capability vocabulary, or behavioral-effect assertions) would be
 > indirection with no current payoff (YAGNI). The price is brittleness if tool names
@@ -215,7 +215,9 @@ systems** plus general RAG-concept docs (`CHUNKING.md`, `RERANKING.md`,
 | **Single-shot efficiency** | a `seed`-style one-fact question (e.g. "what's the default embedding dim?") with `max_rounds: 1` | one search answers it; more is waste (A5) |
 | **Decomposition** | a genuine **3-hop** spanning `CHUNKING` + `RERANKING` + `VECTOR_DB_INTERNALS` | each doc holds one necessary third; one search can't cover all |
 | **Tool selection — `expand_document`** | a fact that spans **more of a doc than the ±1 parent window holds** | the on-by-default expansion (DD-020) under-covers it, so the agent must *choose* to pull the whole doc — this is the discretion `expand_document` adds over the fixed retrieval policy |
+| **Tool selection — `expand_around_chunk`** | a fact whose full form needs a **local neighbourhood** (e.g. a results table *plus* the paragraph below it) — `a18` | a single top-k snippet won't hold both, yet pulling the whole doc (`expand_document`) is wasteful; the ±2-neighbour pull is the uniquely-right surgical move |
 | **Tool selection — `list_sources`** | an orientation query: "which corpus docs cover reranking?" | answered by *seeing the corpus*, not by content search |
+| **Adaptive recovery** | a query whose obvious first phrasing surfaces a strong **cross-doc distractor** (`ef_search` vs the reranker's `candidate_k`) — `a19` | a good path notices the first hit is the *wrong stage* and reformulates; the right answer is only reachable by changing tactics |
 | **Grounded stopping** | an abstention case (like `q43`'s absent HNSW knob values) reached *through the loop* | agent must search, find nothing numeric, and refuse without spinning to budget |
 
 **Verification discipline (A7).** Every `expected_source`/`expected_answer` is
@@ -223,6 +225,35 @@ confirmed by reading the cited doc — inheriting `seed.yaml`'s rule ("do not ad
 source you have not read"). Trajectory assertions stay **loose**: `expects_tool` +
 `max_rounds`, never a pinned sequence, because the loop legitimately has several good
 paths (e.g. it might `list_sources` first *or* go straight to `search`).
+
+### v2 expansion — closing the coverage gaps (a18–a25)
+
+The v1 set (16 Qs) was audited against three checklists this doc defines: the
+**capability taxonomy** (A2), the **action space** (checklist step 1 — *every
+non-trivial tool needs ≥1 example where it is uniquely right*), and — added in v2 — the
+**exit-condition space** the loop can actually reach (`finish` / `oscillation` /
+`budget`). The audit surfaced holes the headline score was blind to, and v2 adds
+`a18–a25` to fill them. Several are **expected to fail or flag at first** — that is
+deliberate *headroom* (A6), not regression.
+
+| New id | Gap it closes | Why it mattered |
+|---|---|---|
+| **a18** | `expand_around_chunk` had **zero** cases despite shipping in the default tool set (`config:48`, DD-031) | a live tool with no example is unmeasurable — an A/B tuning or removing it would read *flat for the wrong reason* (A1) |
+| **a19** | **adaptive_recovery** — the one taxonomy row that was empty (deferred to A3) | the defining agentic behaviour; outcome is gradable today even though full *tool-error* recovery waits for A3, so the trajectory side is a soft reformulation probe |
+| **a20 / a21** | **exit-condition coverage** — `oscillation` (a20) and `budget` (a21) exits had no example; a20 puts a meter under the stop-condition DD-029 *just redesigned* | see the honesty note below |
+| **a22** | **bridge / dependent** multi-hop — hop-2's query is unformulatable until hop-1 answers | v1's multi-hops (a03/a10/a14/a16) were all *parallel* (independently-retrievable halves); the dependent flavour is a distinct, harder planning problem |
+| **a23** | **partial answerability** — answer the known parts (AWW, CR), abstain *only* on the unknown (NLE) | v1 abstention was all-or-nothing; this catches both fabrication *and* over-abstention, and stress-tests `is_abstention` on a mostly-answered reply |
+| **a24** | **conflicting evidence** — two architecture docs (Azure vs ChromaDB) answer the same question differently | catches the silent failure of picking whichever variant ranks first; the right move is to surface the conflict and resolve it via the migration note |
+
+**An honesty note on a20/a21 (they bend A3 on purpose).** A3 says *assert the invariant
+every good path shares* — and a good path never deliberately oscillates or burns its
+budget. So these two cases assert what looks like a *bad* path. The justification is the
+general one for testing a **circuit breaker**: for a pathological or oversized input, the
+invariant worth asserting is *which safety mechanism catches it* before the loop dies.
+The truly-ideal behaviour (a clean early `finish`/abstain) therefore reads as a **benign
+trajectory miss** on these rows — and because trajectory is a separate diagnostic axis
+(A4), that miss never becomes an outcome failure. If you only ever assert good paths, the
+circuit breakers themselves stay untested; this is the deliberate exception that covers them.
 
 ### Which meters read it
 
