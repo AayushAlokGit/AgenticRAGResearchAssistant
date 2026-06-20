@@ -34,13 +34,14 @@ from agentic_rag.agent.loop import build_answerer
 from agentic_rag.config import load_config
 from agentic_rag.evals.answer_correctness import (UNGRADED, aggregate_trajectory,
                                                   is_abstention, judge_correctness)
+from agentic_rag.evals.faithfulness import check_citations, judge_faithfulness
 from agentic_rag.evals.dataset import (EvalQuestion, TrajectoryExpectation, eval_dataset_version,
                                        load_eval_dataset, validate_trajectory_expectations)
 from agentic_rag.evals.runs import (agent_config_snapshot, eval_run_path,
                                     retrieval_config_snapshot, usage_record)
 from agentic_rag.llm.provider import Usage, build_llm, role_model
 from agentic_rag.logging_setup import configure_run_logging
-from agentic_rag.rag.answer import Trajectory, load_prompt
+from agentic_rag.rag.answer import Trajectory, assemble_context, load_prompt
 from agentic_rag.rag.vector_store import Hit
 from agentic_rag.rag.retriever import build_retriever
 
@@ -102,6 +103,11 @@ class AgenticResult:
     abstained: bool
     verdict: Optional[str]                 # CORRECT/PARTIALLY_CORRECT/INCORRECT/UNGRADED, or None
     judge_reason: str = ""
+    # Faithfulness axis (generator groundedness, reference-free): None when the answer abstained
+    # (no claims → trivially faithful → skipped) or faithfulness was switched off for the run.
+    faith_verdict: Optional[str] = None    # SUPPORTED/PARTIALLY_SUPPORTED/UNSUPPORTED/UNGRADED, or None
+    faith_reason: str = ""
+    unsupported_citations: List[str] = field(default_factory=list)  # cited but NOT among retrieved chunks
     retrieved: List[Hit] = field(default_factory=list)
     trajectory: Optional[Trajectory] = None
     traj_checks: List[TrajectoryCheck] = field(default_factory=list)
@@ -139,7 +145,7 @@ def describe(r: AgenticResult) -> str:
 # ───────────────────────────── the run ─────────────────────────────
 
 def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_AGENTIC_DATASET,
-        ids: Optional[List[str]] = None) -> dict:
+        ids: Optional[List[str]] = None, run_faithfulness: bool = True) -> dict:
     config = load_config()
     version = eval_dataset_version(dataset)
 
@@ -152,6 +158,7 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_A
     judge_llm = build_llm(config, role="judge")
     answerer = build_answerer(config, retriever, generator_llm, controller_llm=controller_llm)
     judge_prompt = load_prompt(config, "judge_correctness")
+    faith_prompt = load_prompt(config, "judge_faithfulness")   # reuses the SAME judge_llm (judge role)
 
     if not bool(config.get("agent", {}).get("enabled", False)):
         logger.warning("agent.enabled is FALSE — this harness grades the AGENT, so trajectory "
@@ -180,6 +187,20 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_A
             verdict, reason, judge_usage = judge_correctness(
                 judge_llm, judge_prompt, q.question, q.expected_answer, generated.answer)
 
+        # Faithfulness (generator groundedness): a SECOND, reference-free judge call against the
+        # EXACT context the generator saw. Fires on ANY answered question — including one that
+        # SHOULD have abstained but answered anyway, which is exactly the fabrication this catches.
+        # Cost folds into judge_usage (the instrument bucket), so the existing cost line stays right.
+        faith_verdict = None
+        faith_reason = ""
+        unsupported: List[str] = []
+        if run_faithfulness and not abstained:
+            context = assemble_context(generated.retrieved)
+            faith_verdict, faith_reason, faith_usage = judge_faithfulness(
+                judge_llm, faith_prompt, q.question, context, generated.answer)
+            _, unsupported = check_citations(generated.answer, generated.retrieved)
+            judge_usage = judge_usage + faith_usage
+
         # Trajectory (the new axis): check only if the eval declared assertions.
         traj_checks: List[TrajectoryCheck] = []
         traj_pass: Optional[bool] = None
@@ -193,6 +214,7 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_A
 
         result = AgenticResult(
             q=q, answer=generated.answer, abstained=abstained, verdict=verdict, judge_reason=reason,
+            faith_verdict=faith_verdict, faith_reason=faith_reason, unsupported_citations=unsupported,
             retrieved=generated.retrieved, trajectory=generated.trajectory, traj_checks=traj_checks,
             traj_pass=traj_pass, traj_unassertable=traj_unassertable,
             controller_usage=generated.controller_usage, generator_usage=generated.generator_usage,
@@ -282,6 +304,12 @@ def report(results: List[AgenticResult], config: dict) -> dict:
         logger.info(f"  UNASSERTABLE ({len(unassertable)}): had assertions but no trajectory "
                     f"(agent off?) — {', '.join(r.q.id for r in unassertable)}")
 
+    # ---- FAITHFULNESS axis (generator groundedness; reference-free) ----
+    # Orthogonal to correctness: this is the meter that catches the "correct but ungrounded"
+    # cell (a right-looking answer the retrieved context doesn't actually support). Present only
+    # when faithfulness ran (faith_verdict set); absent on a --no-faithfulness run.
+    faith_summary = faithfulness_report(results)
+
     # ---- CAPABILITY slices (outcome + trajectory, grouped by what each Q tests) ----
     per_capability = capability_slices(results)
     logger.info(f"\nBY CAPABILITY (outcome | trajectory):")
@@ -328,8 +356,59 @@ def report(results: List[AgenticResult], config: dict) -> dict:
             "pass_rate": traj_rate,
             "unassertable": len(unassertable),
         },
+        "faithfulness": faith_summary,   # None on a --no-faithfulness run
         "by_capability": per_capability,
         "trajectory_totals": traj_aggregate,
+    }
+
+
+def faithfulness_report(results: List[AgenticResult]) -> Optional[dict]:
+    """Log the FAITHFULNESS axis and return its summary (or None if faithfulness didn't run).
+
+    Mirrors faithfulness.py's report so the agentic run and the standalone faithfulness run report
+    the same shape. 'judged' = every answered question faithfulness ran on (including a question
+    that wrongly answered instead of abstaining — fabrication is what this is meant to catch). The
+    rate excludes UNGRADED (an unparseable judge verdict is a missing measurement, not a failure).
+    """
+    judged = [r for r in results if r.faith_verdict is not None]
+    if not judged:
+        return None
+
+    supported = [r for r in judged if r.faith_verdict == "SUPPORTED"]
+    partial = [r for r in judged if r.faith_verdict == "PARTIALLY_SUPPORTED"]
+    unsupported = [r for r in judged if r.faith_verdict == "UNSUPPORTED"]
+    ungraded = [r for r in judged if r.faith_verdict == UNGRADED]
+    cite_hallucinations = [r for r in judged if r.unsupported_citations]
+    n_graded = len(judged) - len(ungraded)
+    rate = len(supported) / n_graded if n_graded else 0.0
+
+    logger.info("\nFAITHFULNESS (generator groundedness — reference-free; orthogonal to correctness):")
+    any_unfaithful = False
+    for r in unsupported:
+        any_unfaithful = True
+        logger.info(f"  {r.q.id}  UNSUPPORTED — {_last_line(r.faith_reason)}")
+    for r in partial:
+        any_unfaithful = True
+        logger.info(f"  {r.q.id}  PARTIALLY_SUPPORTED — {_last_line(r.faith_reason)}")
+    for r in cite_hallucinations:
+        any_unfaithful = True
+        logger.info(f"  {r.q.id}  CITED-NOT-RETRIEVED: {', '.join(r.unsupported_citations)}")
+    if not any_unfaithful:
+        logger.info("  (none)")
+    if ungraded:
+        logger.info(f"  UNGRADED ({len(ungraded)}): {', '.join(r.q.id for r in ungraded)} (re-run to grade)")
+    logger.info(f"  faithfulness (fully SUPPORTED): {len(supported)}/{n_graded} = {rate:.3f}   "
+                f"[excludes {len(ungraded)} ungraded] | citation hallucinations {len(cite_hallucinations)}/{len(judged)}")
+
+    return {
+        "judged": len(judged),
+        "supported": len(supported),
+        "partial": len(partial),
+        "unsupported": len(unsupported),
+        "ungraded": len(ungraded),
+        "graded": n_graded,
+        "faithfulness": rate,
+        "citation_hallucinations": len(cite_hallucinations),
     }
 
 
@@ -382,6 +461,9 @@ def persist(summary: dict, results: List[AgenticResult], config: dict, version: 
             "answer": r.answer,
             "expected_answer": r.q.expected_answer,
             "judge_reason": r.judge_reason,
+            "faith_verdict": r.faith_verdict,
+            "faith_reason": r.faith_reason,
+            "unsupported_citations": r.unsupported_citations,
             "trajectory": r.trajectory.as_dict() if r.trajectory else None,
             "trajectory_pass": r.traj_pass,
             "trajectory_checks": [
@@ -425,10 +507,13 @@ def main() -> None:
                         help="Agentic eval dataset YAML (default: evals/datasets/agentic.yaml).")
     parser.add_argument("--ids", default=None, help="Comma-separated question ids (e.g. a05,a06).")
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
+    parser.add_argument("--no-faithfulness", action="store_true",
+                        help="Skip the faithfulness judge call (cheaper; outcome + trajectory only).")
     args = parser.parse_args()
     ids = [token.strip() for token in args.ids.split(",")] if args.ids else None
     configure_run_logging("evals/agentic")
-    run(save=not args.no_save, limit=args.limit, dataset=args.dataset, ids=ids)
+    run(save=not args.no_save, limit=args.limit, dataset=args.dataset, ids=ids,
+        run_faithfulness=not args.no_faithfulness)
 
 
 if __name__ == "__main__":
