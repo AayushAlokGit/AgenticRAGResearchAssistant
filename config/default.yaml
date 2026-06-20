@@ -43,8 +43,10 @@ agent:
   enabled: true
   max_rounds: 5 # hard budget: max search rounds before a forced answer (circuit breaker)
   # Tool catalogue: agent/tools.py.
-  # expand_around_chunk (DD-031): surgical ±2-neighbour coverage for "right doc, wrong chunk"
-  # misses (a16) — the middle ground between search and whole-doc expand_document.
+  # expand_around_chunk (DD-031, PENDING A/B — not yet earned): surgical ±2-neighbour coverage
+  # for "right doc, wrong chunk" misses (a16). Intended middle ground between search and whole-doc
+  # expand_document; a18 is its meter. Confirm it helps (and whether it makes expand_document
+  # redundant) on the v2 run before promoting to a real DD.
   tools: [search, expand_document, expand_around_chunk, list_sources, finish]
   # Final-answer evidence char cap (arrival-order trim). 0 = OFF (keep all gathered evidence).
   # NEW AGENTIC BASELINE: starts OFF. The trim originated as a Groq-6K-wall survival hack;
