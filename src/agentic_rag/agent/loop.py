@@ -122,7 +122,8 @@ class Decision:
 # ───────────────────────────── the controller (part 2) ─────────────────────────────
 
 def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry, question: str,
-                       scratchpad: List[Hit], steps: List[AgentStep], rounds_left: int) -> Decision:
+                       scratchpad: List[Hit], steps: List[AgentStep],
+                       rounds_left: int) -> Decision:
     """Ask the model for the next action; re-ask if it returns no parseable+valid tool call.
 
     An action is valid only if it (a) parses as JSON, (b) names a known tool, and (c) its args
@@ -159,8 +160,8 @@ def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry
                     args=registry.get("finish").args_model(), usage=usage, failed_attempts=failed)
 
 
-def build_controller_prompt(question: str, scratchpad: List[Hit], steps: List[AgentStep],
-                            rounds_left: int) -> str:
+def build_controller_prompt(question: str, scratchpad: List[Hit],
+                            steps: List[AgentStep], rounds_left: int) -> str:
     """The dynamic state shown to the controller each turn: question, history, evidence, budget.
 
     The available TOOLS are NOT here — they're injected once into the system prompt (a fixed

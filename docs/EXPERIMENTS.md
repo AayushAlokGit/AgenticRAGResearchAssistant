@@ -30,3 +30,40 @@ deterministic cited-source-in-context check (catches citation hallucination, fre
 **Recurring themes:** (a) measure everything — "obviously better" techniques (recursive, bigger top_k, relevance gate) all *lost*; (b) document-level recall overstates fact-level answerability; (c) relevance (embedder, reranker, gate) ≠ answerhood/truth; (d) uncalibrated scores aren't portable (→ RRF uses ranks; gate uses relative margin).
 
 **Open levers (untested):** **answer-context ordering** as its own A/B (arrival vs round-robin-interleaved vs grouped-by-source — lost-in-the-middle; note budget stays ON at 16k now, so this reorders *within* the kept set); thinking-model controller (separate `controller` role); variance re-run of the agentic A/B; parent window=2; cross-*document* completeness (q27-style); raising max_rounds (currently 3); **query transformation** (multi-query/RAG-Fusion, HyDE, decomposition) — aimed at the multi-source PARTIALs the embedder swap couldn't reach; **stronger reranker** (`bge-reranker-large`).
+
+---
+
+# Agentic v2 lineage — eval set `evals/datasets/agentic.yaml` (25 Qs)
+
+A **separate lineage** from the table above (that one is the RAG substrate on the 40-Q seed set under retired judges). This one stress-tests the multi-tool agent **loop** on a harder 25-Q set with capability slices (single_shot_efficiency, decomposition, tool_selection, grounded_stopping, adaptive_recovery). Models: controller + generator `gemini-2.5-flash`, **judge `gemini-2.5-flash-lite`**. Scoring: correctness = mean partial-credit (CORRECT 1 / PARTIALLY_CORRECT 0.5 / INCORRECT 0; correct-abstention 1, false-abstention 0) over all 25; faithfulness = SUPPORTED / answered (reference-free).
+
+## ⭐ B1 BASELINE — 2026-06-20 (n=3) — the bar every future agentic change must beat
+
+| Metric | Runs | **Mean** | Run-to-run spread = **noise floor** |
+|---|---|---|---|
+| **Correctness** | 0.60 / 0.58 / 0.60 | **0.593** | **±0.02** (tight) |
+| **Faithfulness** | 0.762 / 0.842 / 0.833 | **0.812** | ±0.08 (loose) |
+| e2e success | 0.33 / 0.29 / 0.33 | 0.317 | ±0.05 |
+| avg rounds | 3.88 / 3.72 / 3.84 | 3.81 | — |
+
+**Config (B1):** lean action space `[search, list_sources, finish]` (DD-031) · `max_rounds=5` · `answer_char_budget=0` (no trim) · oscillation patience=2 · top_k=5 · hybrid+rerank+parent-expansion OFF-as-base for the loop. **Detectability:** a real correctness change must clear **≥~0.04**, faithfulness **≥~0.08**. *Judge-CHOICE* noise is far larger (±0.32, llama-4-scout→gemini-flash-lite on identical answers) but is a one-time cost now the judge is fixed — see DD-033.
+
+**Per-question robustness (3 runs) — the map of what to fix vs what's jitter:**
+- **SOLID 3/3 (9):** a01 a11 · a09 a13 a18 a19 a20 · a22 a26 — leave alone.
+- **DEAD 0/3 (3):** **a14** (decomp) · **a15** (single-shot) · **a23** (grounded-stopping) — reliably broken, highest-value targets.
+- **Consistent PARTIAL=0.5 every run (7):** **a02 a03 a10 a05 a07 a24 a25** — the *faithful-but-incomplete* signature (answer drops a sub-part), reliable signal.
+- **FLAKY, flips run-to-run (6):** a17 a16 a06 a12 a08 a21 — **noise; do NOT optimize against these** (we over-read them all session).
+- Weakest capabilities: **decomposition** and **tool_selection**, dominated by consistent-partials, not total failures.
+
+## Closed lever — in-loop coverage / decomposition (DD-032, DD-033)
+
+| Attempt | Mechanism | Result vs B1 (under trustworthy judge) | Verdict |
+|---|---|---|---|
+| A | Blind plan-first decomposition (upfront sub-questions) | flat correctness, mixed per-Q | ❌ (DD-032) |
+| B | Completeness gate on top of A | gate vetoed 0/25 finishes — inert | ❌ removed (DD-032) |
+| C | Adaptive in-loop `open` list (controller self-reports from snippets) | corr 0.55 ≈ B1; signal proven noisy (open>0 scored *higher*) | ❌ (DD-033) |
+| D | Full-text coverage gate (re-check completeness on full evidence before finish) | corr 0.58 ≈ B1 0.56, faith ~0.81 both — no gain | ❌ removed, code excised (DD-033) |
+
+**Lesson (the session's big one):** all four failed to beat plain B1. D first *looked* like +0.16 corr — that was a **judge artifact** (the llama judge degenerated to all-PARTIAL faith=0.000 and was generous on correctness; the *same answers* scored 0.840 by llama vs 0.520 by gemini-flash-lite). **A fluent wrong *measurement* looks like a real result** — our noise floor (judge-choice ±0.32, run-to-run ±0.12 across answer-sets) dwarfed every effect we chased. Reliable coverage assessment needs full evidence text (the generator's view), which the cheap routing controller structurally lacks — and even given it (D), the gain didn't survive a trustworthy gauge.
+
+**Next lever (diagnosis-gated):** classify the 10 reliable failures (3 DEAD + 7 PARTIAL) as *evidence-gathered-but-dropped* (→ generator/synthesis lever: pro-generator A/B per DD-025, or answer prompt) vs *evidence-never-retrieved* (→ retrieval lever). Don't build before that split is known.
