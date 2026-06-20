@@ -85,6 +85,20 @@ class ExpandDocumentArgs(BaseModel):
                                          "e.g. 'chromadb_overview.md') to pull in FULL.")
 
 
+# How many same-source chunks on EACH side of the target chunk expand_around_chunk pulls in.
+# ±2 => up to a 5-chunk contiguous window. Sized from the a16 failure (the answer-bearing
+# neighbour sat ~2 chunks from the retrieved one); a fixed constant, not an agent arg, so the
+# controller only has to name WHERE to expand, not tune HOW WIDE (keeps tool-selection simple).
+NEIGHBOUR_WINDOW = 2
+
+
+class ExpandAroundChunkArgs(BaseModel):
+    source: str = Field(..., description="The exact source filename of the chunk to expand around "
+                                         "(as shown in the evidence, e.g. 'normalizer.md').")
+    chunk_id: int = Field(..., description="The chunk index to expand around — the number after "
+                                           "'#' in the evidence (e.g. 7 for '[normalizer.md #7]').")
+
+
 class NoArgs(BaseModel):
     """For tools that take no arguments (list_sources, finish)."""
     pass
@@ -142,6 +156,30 @@ def _run_expand_document(args: ExpandDocumentArgs, ctx: ToolContext) -> ToolResu
                       hits=hits)
 
 
+def _run_expand_around_chunk(args: ExpandAroundChunkArgs, ctx: ToolContext) -> ToolResult:
+    """Pull the ±NEIGHBOUR_WINDOW same-source neighbours of a specific chunk — surgical coverage.
+
+    The middle ground between search (re-hits the same neighbourhood) and expand_document (dumps
+    the whole doc): when the RIGHT source is found but the needed fact sits just outside the
+    retrieved snippet, this fetches only the few adjacent chunks. Reuses the same per-source
+    fetch expand_document uses, sliced to a window. Scratchpad dedup drops any already held.
+    """
+    by_index = ctx.store.fetch_source_chunks(args.source)
+    if not by_index:
+        return ToolResult(observation=f'expand_around_chunk "{args.source}" -> no such source in the corpus')
+    lo, hi = args.chunk_id - NEIGHBOUR_WINDOW, args.chunk_id + NEIGHBOUR_WINDOW
+    indices = [index for index in sorted(by_index) if lo <= index <= hi]
+    if not indices:
+        return ToolResult(observation=f'expand_around_chunk "{args.source}" #{args.chunk_id} '
+                                      f'-> no chunks near #{args.chunk_id} in that source')
+    # score=0.0: pulled wholesale by position, not ranked by a retriever (as in expand_document).
+    hits = [Hit(source=args.source, chunk_index=index, text=by_index[index], score=0.0)
+            for index in indices]
+    return ToolResult(observation=f'expand_around_chunk "{args.source}" #{args.chunk_id} -> '
+                                  f'{len(hits)} neighbour chunk(s) (#{indices[0]}–#{indices[-1]})',
+                      hits=hits)
+
+
 def _run_list_sources(args: NoArgs, ctx: ToolContext) -> ToolResult:
     """List the corpus's source documents (filename + chunk count) — orientation, no evidence.
 
@@ -176,6 +214,14 @@ _TOOL_CATALOGUE: Dict[str, Tool] = {
         description="Fetch a whole source document in full. Use when a search returned a clearly "
                     "relevant source but only a partial fragment of it (a split table/section).",
         args_model=ExpandDocumentArgs, run=_run_expand_document,
+    ),
+    "expand_around_chunk": Tool(
+        name="expand_around_chunk",
+        description="Fetch the immediate same-document NEIGHBOURS (a few chunks before and after) "
+                    "of a specific chunk you already found. Use when a search surfaced the RIGHT "
+                    "document but the specific fact you need is just outside the retrieved "
+                    "snippet — more focused and cheaper than pulling the whole document.",
+        args_model=ExpandAroundChunkArgs, run=_run_expand_around_chunk,
     ),
     "list_sources": Tool(
         name="list_sources",

@@ -43,7 +43,9 @@ agent:
   enabled: true
   max_rounds: 5 # hard budget: max search rounds before a forced answer (circuit breaker)
   # Tool catalogue: agent/tools.py.
-  tools: [search, expand_document, list_sources, finish] # first agentic baseline: full action space
+  # expand_around_chunk (DD-031): surgical ±2-neighbour coverage for "right doc, wrong chunk"
+  # misses (a16) — the middle ground between search and whole-doc expand_document.
+  tools: [search, expand_document, expand_around_chunk, list_sources, finish]
   # Final-answer evidence char cap (arrival-order trim). 0 = OFF (keep all gathered evidence).
   # NEW AGENTIC BASELINE: starts OFF. The trim originated as a Groq-6K-wall survival hack;
   # under the PRIOR pure-RAG + simple-ReAct pipeline an A/B found it incidentally helped as a

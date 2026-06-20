@@ -63,6 +63,10 @@ OSCILLATION_PATIENCE = 2
 
 # Chars of each chunk shown to the CONTROLLER in its router view — enough to recognize what
 # was found, small enough that the controller prompt stays bounded across many rounds.
+# KNOWN LIMITATION (DD-030): this is a PREFIX snippet, so a fact past char 300 is invisible to
+# the CONTROLLER (the GENERATOR still sees full hit.text, so answers aren't lost — only routing
+# is blind to chunk tails). Fix if it ever bites: a relevance-CENTERED snippet (show the
+# query-matching span, not the prefix). Deferred — no measured failure traces to this yet.
 CONTROLLER_SNIPPET_CHARS = 300
 
 # Tolerate the model wrapping its JSON in prose or ```json fences: grab the first {...} block.
