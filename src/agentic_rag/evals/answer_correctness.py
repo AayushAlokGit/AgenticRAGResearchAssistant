@@ -79,9 +79,17 @@ class QAResult:
     trajectory: Optional[Trajectory] = None  # agent process metrics (X1); None on the naive path
 
 
+# Leading characters to peel off before matching the refusal phrase: the answer prompt may
+# wrap it in quotes ("Not enough information."), and models sometimes add markdown emphasis or
+# backticks. Detection must be robust to that surface decoration, or a correct abstention reads
+# as "FAILED TO ABSTAIN" (a silent measurement bug — abstention is a whole scored axis).
+_ABSTENTION_LEADING_CHARS = " \t\"'`*_“”‘’"
+
+
 def is_abstention(answer: str) -> bool:
-    """True if the answer is the fixed refusal phrase the prompt instructs."""
-    return answer.strip().lower().startswith(ABSTENTION_PHRASE)
+    """True if the answer is the fixed refusal phrase, ignoring leading quotes/markdown."""
+    normalized = answer.strip().lstrip(_ABSTENTION_LEADING_CHARS).lower()
+    return normalized.startswith(ABSTENTION_PHRASE)
 
 
 def parse_verdict(raw: str) -> str:
