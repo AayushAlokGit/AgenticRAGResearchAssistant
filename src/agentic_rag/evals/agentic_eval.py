@@ -374,6 +374,7 @@ def persist(summary: dict, results: List[AgenticResult], config: dict, version: 
             "id": r.q.id,
             "type": r.q.type,
             "capability": r.q.capability,
+            "question": r.q.question,
             "should_abstain": r.q.should_abstain,
             "abstained": r.abstained,
             "verdict": r.verdict,
