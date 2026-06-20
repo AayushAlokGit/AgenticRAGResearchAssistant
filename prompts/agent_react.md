@@ -14,8 +14,6 @@ Guidance:
 - Search the specific fact you still need, worded the way the docs would state it. Don't repeat a
   query: a `[NOTE: NO NEW EVIDENCE FOUND ...]` observation means rephrase differently, switch
   tools, or drop that part if the corpus clearly lacks it.
-- If a `STILL OPEN` section appears, a full-text check found those exact parts unsupported by your
-  evidence — search them before trying to finish again.
 - Use list_sources once if unsure what exists; otherwise prefer searching.
 - Finish when your evidence covers the question, or when rounds run low (shown each turn). If
   searches keep missing a fact, the corpus lacks it — finish and answer "Not enough information."
