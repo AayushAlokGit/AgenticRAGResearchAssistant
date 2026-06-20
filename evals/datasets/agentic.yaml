@@ -22,7 +22,7 @@
 #   decomposition          : a03 (RAG) · a10, a14 (claims) · a16 (MCP-server) · a22 (BRIDGE) · a24 (conflict)
 #   tool_selection         : a05, a06, a12 (expand_document) · a07, a25 (list_sources) · a18 (expand_around_chunk)
 #   grounded_stopping      : a08, a09 (RAG abstain) · a13 (claims abstain) · a20 (oscillation) · a23 (PARTIAL)
-#   adaptive_recovery      : a19 (distractor → reformulate)        [NEW in v2; outcome-gradable today]
+#   adaptive_recovery      : a19 (knob/stage distractor → reformulate) · a26 (score/stage distractor → reformulate)
 #   (budget-exit stress)   : a21 (exercises exit_reason==budget)   [trajectory-only intent; see notes]
 #
 # ── Notes ─────────────────────────────────────────────────────────────────────────────────
@@ -397,3 +397,17 @@ questions:
     trajectory:
       expects_tool: list_sources
     notes: "Second list_sources case (a07 was the only one, and a07's note flags it as a soft discriminator). A question ABOUT THE SET of documents — sorting the corpus by document ROLE — is naturally answered by SEEING the corpus via list_sources, then classifying by filename/role, rather than by content search. SOFT discriminator (like a07): a content search for 'setup' also surfaces these, so the primary test is whether the controller CHOOSES to orient via list_sources; retrieval recall is secondary (the answer is a filename survey, classification is filename-driven). match:any keeps grading lenient on the exact partition."
+
+  # ── adaptive_recovery — SECOND case (the taxonomy's thinnest row had only a19) ─────────────
+  - id: a26
+    type: factual
+    capability: adaptive_recovery
+    question: "When the system returns its top-5 chunks for a query, what does the numeric relevance score attached to each returned chunk actually represent, and is it a calibrated probability you can threshold as a confidence?"
+    match: any
+    expected_sources:
+      - RERANKING.md
+    should_abstain: false
+    expected_answer: "The score on each returned chunk is the STAGE-2 cross-encoder RERANKER's output — the final top-5 ordering is produced by the reranker, not by the stage-1 vector search. It is a single raw scalar LOGIT from a one-output linear head (num_labels=1): higher = more relevant. It is NOT a calibrated probability — it is unbounded and often negative, so you cannot threshold it as a confidence; ranking uses only the RELATIVE order (a negative top score can still be rank 1). The number encodes a learned, supervised notion of RELEVANCE (the head was fine-tuned on a labeled ranking set like MS MARCO), not correctness or faithfulness. It must NOT be confused with the stage-1 bi-encoder COSINE score (stored as cosine distance = 1 − cosine similarity, range 0–2) — that is a different number from an earlier stage."
+    trajectory:
+      min_searches: 2
+    notes: "ADAPTIVE-RECOVERY probe #2 (the row had only a19; a single soft case can't discriminate the capability — AGENT_EVAL_SETS.md A1/A6). The recovery trigger is STAGE confusion, distinct from a19's KNOB confusion: the natural first phrasing ('the similarity score on the results') strongly surfaces the stage-1 cosine 1−distance / 0–2 range (VECTOR_DB_INTERNALS §4) — a strong CROSS-DOC distractor pulling toward the wrong stage. A good path notices the FINAL returned ordering comes from stage-2 reranking and reformulates toward the cross-encoder score (RERANKING §3). min_searches=2 is a SOFT reformulation probe like a19: a 1-search path that still lands the reranker-logit answer is fine (trajectory miss = flag, not auto-fail). The OUTCOME is the real test — did the agent ground the cross-encoder LOGIT (uncalibrated, not thresholdable) and NOT borrow the stage-1 cosine 0–2 score? Reuses RERANKING §3's content that a06 also touches, but a06 NAMES reranking and grades expand_document; here reranking is UNSTATED, which is what forces the recovery. Outcome fully gradable today; full tool-ERROR recovery still waits for A3."
