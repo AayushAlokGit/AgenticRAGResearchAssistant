@@ -289,6 +289,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     tool_errors = 0              # parse/validate failures across all rounds (trajectory)
     redundant_searches = 0       # retrievals that re-found only old evidence (trajectory, cumulative)
     consecutive_redundant = 0    # redundant retrievals IN A ROW; resets on progress (oscillation guard)
+    seeded_on_empty = False      # whether the empty-scratchpad guard has fired (fires at most once)
 
     for round_index in range(max_rounds):
         rounds_left = max_rounds - round_index
@@ -304,6 +305,23 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         logger.info("agent: think: %s", decision.thought or "(no thought given)")
 
         if tool.terminal:  # finish
+            # GUARD (DD-039): never answer from an EMPTY scratchpad. The controller occasionally
+            # picks `finish` on round 0 with zero evidence (a17), which silently degrades the run to
+            # the naive single-retrieval fallback — the agent loop contributes nothing. Enforce the
+            # invariant "gather evidence before answering" structurally (not via a prompt nudge the
+            # controller ignores): seed one search on the question and CONTINUE so the controller
+            # decides again with evidence in hand. Fires at most once, so it can't spin.
+            if len(scratchpad) == 0 and not seeded_on_empty:
+                seeded_on_empty = True
+                seed_hits = retriever.query(question, top_k)
+                new_hits = scratchpad.add(seed_hits, retrieved_by="empty-finish-guard")
+                steps.append(AgentStep(decision.thought, tool.name,
+                             observation=f"[GUARD: cannot finish with no evidence gathered — seeded a "
+                                         f"search on the question -> {len(new_hits)} chunk(s). Review them "
+                                         f"and search further if parts are still unanswered.]"))
+                logger.info("agent: finish-on-empty-scratchpad -> seeded a search (%d chunk(s)), continuing",
+                            len(new_hits))
+                continue
             steps.append(AgentStep(decision.thought, tool.name, observation="(finish)"))
             logger.info("agent: action=FINISH (model judged the evidence sufficient)")
             exit_reason = "finish"
