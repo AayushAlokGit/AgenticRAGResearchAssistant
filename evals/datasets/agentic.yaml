@@ -20,7 +20,10 @@
 # ── Capability coverage (taxonomy → questions) ────────────────────────────────────────────
 #   single_shot_efficiency : a01, a02 (RAG) · a11, a15 (claims) · a17 (cross-domain homonym)
 #   decomposition          : a03 (RAG) · a10, a14 (claims) · a16 (MCP-server) · a22 (BRIDGE) · a24 (conflict)
-#   tool_selection         : a05, a06, a12 (expand_document) · a07, a25 (list_sources) · a18 (expand_around_chunk)
+#   tool_selection         : a07, a25 (list_sources — the only selectable non-search content tool).
+#                            a05, a06, a12, a18 WERE expand_document/expand_around_chunk cases; those
+#                            tools were dropped from the action space (DD-031), so they now run
+#                            search-only as OUTCOME-only breadth/local-synthesis probes (no trajectory).
 #   grounded_stopping      : a08, a09 (RAG abstain) · a13 (claims abstain) · a20 (oscillation) · a23 (PARTIAL)
 #   adaptive_recovery      : a19 (knob/stage distractor → reformulate) · a26 (score/stage distractor → reformulate)
 #   (budget-exit stress)   : a21 (exercises exit_reason==budget)   [trajectory-only intent; see notes]
@@ -32,6 +35,8 @@
 #     is one you fly blind on). Several are EXPECTED to fail/flag at first — that is intended
 #     headroom (A6), not a regression. What v2 newly covers:
 #       * a18 — expand_around_chunk had ZERO cases despite being a live default tool (config:48).
+#               (That tool was SINCE dropped from the action space, DD-031 — a18 now runs search-only,
+#               OUTCOME-only, with no trajectory assertion.)
 #       * a19 — adaptive_recovery: first seeded case (was deferred to A3). Outcome-gradable now;
 #               full tool-ERROR recovery still waits for A3, so trajectory here is a SOFT probe.
 #       * a20/a21 — exit-condition coverage (oscillation / budget). These deliberately BEND A3's
@@ -178,7 +183,7 @@ questions:
       min_searches: 2
     notes: "Genuine 2-hop across two MCP-server OPERATIONAL docs, each holding a necessary half: mean-pooling + L2 normalization lives only in LOCAL_EMBEDDING_SERVICE_DOCUMENTATION (§Runtime Execution); HNSW + cosine lives only in 02-Architecture (§ChromaDB Optimization + the env config). Real pipeline causality (embed → index), not a contrived staple — the connection is the literal query path. Brings the AGENT layer onto the project's PRIMARY corpus, which v2 used only as distractor mass (seed.yaml already covers these docs for OUTCOME). match:all so partial retrieval scores partial; forces ≥2 searches."
 
-  # ═══ tool_selection — expand_document / list_sources is the right move ══════════════════
+  # ═══ tool_selection — list_sources is the right move; a05/a06/a12 are now search-only (DD-031) ═══
   - id: a05
     type: factual
     capability: tool_selection
@@ -188,9 +193,7 @@ questions:
       - CHUNKING.md
     should_abstain: false
     expected_answer: "Family A size-based (A1 fixed-size: cut every N chars/tokens; A2 sliding-window/overlap: adjacent chunks share tokens). Family B structure-aware (B1 recursive splitting on a paragraph→line→sentence→word→char hierarchy; B2 format/document-aware: split on markdown/HTML/AST). Family C meaning-based (C1 semantic chunking: cut at topic shifts; C2 proposition/atomic: LLM rewrites into standalone facts). Family D decouple retrieval-unit≠generation-unit (D1 parent–child/small-to-big; D2 sentence-window). Family E context-preserving embeddings (E1 Contextual Retrieval, E2 late chunking, E3 metadata enrichment)."
-    trajectory:
-      expects_tool: expand_document
-    notes: "The full A–E taxonomy spans most of CHUNKING.md §4 — more than top_k=5 + the ±1 parent window can carry, and re-searching one doc just re-hits overlapping chunks. A good path pulls the whole doc with expand_document. SOFT discriminator: the four-tool arm might still answer via plain search — a trajectory miss is a flag, not an auto-fail. The baseline arm cannot use the tool at all."
+    notes: "The full A–E taxonomy spans most of CHUNKING.md §4 — more than top_k=5 + the parent-expansion window can comfortably carry. This was an expand_document discriminator; that tool was dropped from the action space (DD-031), so the case is now an OUTCOME-only breadth probe: can plain search (with parent-expansion) still gather enough of the taxonomy to answer? No trajectory assertion — there is no longer a distinguishing tool to expect."
 
   - id: a06
     type: factual
@@ -201,9 +204,7 @@ questions:
       - RERANKING.md
     should_abstain: false
     expected_answer: "Tension: one model can't be both cheap enough to scan millions and accurate enough to rank the top few, so you stage it. Stage 1 bi-encoder encodes query and item SEPARATELY into vectors (precomputable/indexable, but a lossy query-blind summary); stage 2 cross-encoder concatenates the (query,item) pair and scores it JOINTLY via cross-attention (accurate, but not indexable — a fresh forward pass per pair at query time). The score is a single uncalibrated logit (higher=more relevant) from a head fine-tuned on a labeled ranking dataset like MS MARCO; it measures RELEVANCE, not correctness or faithfulness. Production adds: hosted vs self-hosted GPU serving behind a thin wrapper; other ranker families (cross-encoder pointwise, LambdaMART learning-to-rank over features, LLM listwise rerankers); latency mitigations (cap candidate_k, batch in one pass, distill/quantize, a multi-stage funnel); blended signals + click-feedback retraining via online A/B; and graceful degradation (timeout → fall back to the stage-1 order, cache hot (query,doc) pairs)."
-    trajectory:
-      expects_tool: expand_document
-    notes: "Demands coverage of RERANKING §1–§3 + §7 — essentially the whole doc, well past a single window. A good path expands the document. Same soft-discriminator caveat as a05."
+    notes: "Demands coverage of RERANKING §1–§3 + §7 — essentially the whole doc, well past a single window. Was an expand_document discriminator; that tool was removed (DD-031), so the case is now OUTCOME-only — it tests whether search-only carries near-whole-doc breadth. No trajectory assertion (cf. a05)."
 
   - id: a07
     type: factual
@@ -231,9 +232,7 @@ questions:
       - extractor.md
     should_abstain: false
     expected_answer: "ReserveChangeExtractor (RULE) — fires on Activity:'Reserving' notes and regex-captures the 'Changed to $X' line; rules because financial amounts are exact, templated, and must be 100% reproducible. AppointmentMarkerExtractor (RULE, fast-path) — catches templated headers ('Date of Appointment:', 'Next Office Visit:', etc.) without paying LLM tokens. AppointmentExtractor (LLM, general path) — fires on any note plausibly describing a medical appointment, reading narrative status (attended/missed/cancelled/scheduled) and novel scheduling formats the marker rule misses. ReturnToWorkExtractor (LLM) — judges whether a return actually occurred vs. was merely offered/discussed, which a regex can't do. The appointment type deliberately uses BOTH a rule and an LLM extractor, with the Resolver reconciling the candidates."
-    trajectory:
-      expects_tool: expand_document
-    notes: "The extractor catalog spans extractor.md §5 (5.1–5.4) plus the hybrid rationale in §3 — broad single-doc synthesis past a single window, so a good path expands the whole doc. Deliberately asks to NAME the extractors, NOT to COUNT them: the doc is internally inconsistent on count (§5 intro says 'five' but lists four named) — a count question would have no defensible ground truth. Soft discriminator (same caveat as a05/a06)."
+    notes: "The extractor catalog spans extractor.md §5 (5.1–5.4) plus the hybrid rationale in §3 — broad single-doc synthesis past a single window. Was an expand_document discriminator; that tool was removed (DD-031), so the case is now OUTCOME-only (cf. a05/a06). Deliberately asks to NAME the extractors, NOT to COUNT them: the doc is internally inconsistent on count (§5 intro says 'five' but lists four named) — a count question would have no defensible ground truth."
 
   # ═══ grounded_stopping — answer ABSENT; DECIDE to refuse, don't spin to budget ══════════
   - id: a08
@@ -280,7 +279,7 @@ questions:
   # flagging at first is EXPECTED headroom (A6), not a regression. See the header notes per id.
   # ═══════════════════════════════════════════════════════════════════════════════════════════
 
-  # ── tool_selection — expand_around_chunk (a LIVE default tool with no prior case) ──────────
+  # ── tool_selection — was an expand_around_chunk case; tool removed (DD-031), now search-only ──
   - id: a18
     type: factual
     capability: tool_selection
@@ -290,9 +289,7 @@ questions:
       - RERANKING.md
     should_abstain: false
     expected_answer: "Hybrid -> hybrid+rerank: recall@1 0.724 -> 0.759; recall@3 0.793 -> 0.931; recall@5 0.897 -> 1.000; MRR 0.903 -> 0.948. Adding the cross-encoder reranker eliminated all three end-to-end false abstentions (q01, q25, q26): in each, the fact-bearing chunk WAS in the stage-1 candidate pool but ranked below top-5, so the generator saw no usable evidence and refused; the cross-encoder re-scored the pool and lifted that chunk into the top-5, so the generator could finally answer. That is the chunk-level fix document-level recall couldn't even see — the precise problem stage-2 reranking exists to solve."
-    trajectory:
-      expects_tool: expand_around_chunk
-    notes: "expand_around_chunk had ZERO eval cases despite shipping in the default tool set (config:48, DD-031) — so any A/B tuning NEIGHBOUR_WINDOW or adding/removing it reads FLAT for the wrong reason (AGENT_EVAL_SETS.md A1). The answer needs RERANKING §9's results TABLE plus the false-abstention PARAGRAPH directly below it — a local neighbourhood that a single top-k snippet won't both hold, while expand_document (whole §1–§9 doc) is wasteful overkill. So the surgical ±2-neighbour pull is the uniquely-right move. SOFT discriminator (same caveat as a05/a06): a path could scrape it via re-search; a trajectory miss is a flag, not an auto-fail. Outcome is fully gradable today regardless of path."
+    notes: "The answer needs RERANKING §9's results TABLE plus the false-abstention PARAGRAPH directly below it — a tight local neighbourhood. This was the only expand_around_chunk case; that tool was dropped from the action space (DD-031, after A/B it regressed 5 v1-solid Qs and never reliably fired), so the case is now OUTCOME-only: can search-only — with parent-expansion (window=2) supplying the ±neighbour window — still gather both the table and the paragraph? No trajectory assertion; there is no longer a distinguishing tool to expect. Outcome is fully gradable today regardless of path."
 
   # ── adaptive_recovery — first seeded case (capability was deferred to A3) ──────────────────
   - id: a19
