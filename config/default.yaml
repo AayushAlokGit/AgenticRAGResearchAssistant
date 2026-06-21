@@ -13,7 +13,8 @@ llm:
     judge: {provider: gemini, model: gemini-2.5-flash}
     # judge: {provider: groq, model: meta-llama/llama-4-scout-17b-16e-instruct} # different family from the gemini generator (DD-013 self-grade avoidance); paired with the redesigned grading prompt
   temperature: 0.0 # near-deterministic for reproducible evals
-  max_tokens: 1024
+  max_tokens: 2048 # was 1024 — too small: truncated long "complete account" answers mid-thought
+                   # (a06 hit the cap at ~1024 tokens and dropped its 4th part; also broke batched tagging)
   max_retries: 5 # provider-level backoff before the router falls through to the next tier
   timeout: 30.0 # seconds per request
 
@@ -43,7 +44,7 @@ retrieval:
   parent_expansion:
     # Stage 3 small-to-big: expand each top_k chunk into its ±window same-source
     # neighbours to restore split tables/sections without distractors (DD-020).
-    enabled: false
+    enabled: true
     window: 1 # window=1 => 3-chunk parent windows
 
 agent:

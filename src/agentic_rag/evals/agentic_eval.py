@@ -243,7 +243,17 @@ def report(results: List[AgenticResult], config: dict) -> dict:
     abstained_correctly = [r for r in abstention if r.abstained]
 
     n_graded = len(answerable) - len(ungraded)
+    # Two correctness metrics, recorded SEPARATELY so they can't be confused:
+    #  - STRICT (end_to_end_success): only full-CORRECT counts, over graded ANSWERABLE Qs. This is
+    #    the headline; it understates a system whose errors are INCOMPLETE rather than WRONG.
+    #  - PARTIAL-CREDIT: CORRECT=1.0, PARTIALLY_CORRECT=0.5 — sensitive to PARTIAL<->CORRECT moves a
+    #    strict metric is blind to. `*_answerable` is over answerable Qs (parallel to strict);
+    #    `*_overall` also folds in correct abstentions, over ALL graded Qs.
     end_to_end = len(correct) / n_graded if n_graded else 0.0
+    partial_credit_answerable = (len(correct) + 0.5 * len(partial)) / n_graded if n_graded else 0.0
+    n_scored = n_graded + len(abstention)
+    partial_credit_overall = ((len(correct) + 0.5 * len(partial) + len(abstained_correctly)) / n_scored
+                              if n_scored else 0.0)
 
     generator_model = role_model(config, "generator")
     judge_model = role_model(config, "judge")
@@ -279,7 +289,8 @@ def report(results: List[AgenticResult], config: dict) -> dict:
     logger.info(f"\nOUTCOME SUMMARY")
     logger.info(f"  answerable ({len(answerable)}): answered {len(answered)}  false-abstention {len(false_abstentions)}")
     logger.info(f"    of answered -> CORRECT={len(correct)} PARTIAL={len(partial)} INCORRECT={len(incorrect)} UNGRADED={len(ungraded)}")
-    logger.info(f"    end-to-end success: {len(correct)}/{n_graded} = {end_to_end:.3f}   [excludes {len(ungraded)} ungraded]")
+    logger.info(f"    end-to-end success (STRICT, full-correct/answerable): {len(correct)}/{n_graded} = {end_to_end:.3f}   [excludes {len(ungraded)} ungraded]")
+    logger.info(f"    partial-credit (CORRECT=1, PARTIAL=0.5): answerable={partial_credit_answerable:.3f}  overall(incl. abstentions)={partial_credit_overall:.3f}")
     logger.info(f"  abstention ({len(abstention)}): abstained correctly {len(abstained_correctly)}/{len(abstention)}")
 
     # ---- TRAJECTORY axis (the diagnostic; separate from outcome) ----
@@ -345,7 +356,9 @@ def report(results: List[AgenticResult], config: dict) -> dict:
             "incorrect": len(incorrect),
             "ungraded": len(ungraded),
             "graded": n_graded,
-            "end_to_end_success": end_to_end,
+            "end_to_end_success": end_to_end,                       # STRICT: full-CORRECT / answerable
+            "correctness_partial_credit_answerable": partial_credit_answerable,  # CORRECT=1, PARTIAL=0.5 / answerable
+            "correctness_partial_credit_overall": partial_credit_overall,        # + correct abstentions, / all graded
             "abstention_total": len(abstention),
             "abstained_correctly": len(abstained_correctly),
         },
