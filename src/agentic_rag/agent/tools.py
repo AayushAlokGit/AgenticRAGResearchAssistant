@@ -55,8 +55,9 @@ class ToolResult:
     The split is the lesson: not everything the agent observes belongs in the final answer.
       - `observation` — short text shown back to the CONTROLLER so it can pick the next action
         (e.g. "search X -> 5 hits", or a directory listing). Routing info.
-      - `hits` — chunks that become EVIDENCE feeding the final answer's context. Only the
-        retrieval tools (search, expand_document) produce these; list_sources/finish do not.
+      - `hits` — chunks that become EVIDENCE feeding the final answer's context. The retrieval
+        tools (search, expand_document) produce these; `list_sources` emits the corpus MAP as a
+        synthetic hit (so the generator can answer enumeration FROM it); `finish` produces none.
     """
     observation: str
     hits: List[Hit] = field(default_factory=list)
@@ -180,18 +181,58 @@ def _run_expand_around_chunk(args: ExpandAroundChunkArgs, ctx: ToolContext) -> T
                       hits=hits)
 
 
-def _run_list_sources(args: NoArgs, ctx: ToolContext) -> ToolResult:
-    """List the corpus's source documents (filename + chunk count) — orientation, no evidence.
+def _load_doc_tags(store) -> tuple:
+    """Load the induced tag schema + per-doc tags persisted next to the store (rag/tagging.py).
 
-    Lets the controller SEE what documents exist before guessing query terms, instead of
-    searching blind. Pure routing info: returns an observation, no hits.
+    Read straight from the store's persist dir so the tool needs no extra wiring; returns
+    ({source: {axis: value}}, {axis: {...}}) — empty if the corpus hasn't been tagged.
+    """
+    import json
+    from pathlib import Path
+
+    base = Path(getattr(store, "persist_directory", "") or "")
+    tags, schema = {}, {}
+    tags_file, schema_file = base / "doc_tags.json", base / "tag_schema.json"
+    if tags_file.exists():
+        tags = json.loads(tags_file.read_text(encoding="utf-8"))
+    if schema_file.exists():
+        schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    return tags, schema
+
+
+def _run_list_sources(args: NoArgs, ctx: ToolContext) -> ToolResult:
+    """List every source document WITH its metadata tags — the corpus map (no evidence).
+
+    This is what answers "which/what documents are X" / "list all docs that…" enumeration
+    questions: the controller reads each doc's tags and picks the matching set directly, instead
+    of hoping similarity-search surfaces every member (which it can't — see DD-035). Also serves
+    plain orientation before searching. Pure routing info: an observation, no hits.
     """
     counts: Dict[str, int] = {}
     for chunk in ctx.store.all_chunks():
         source = chunk["source"]
         counts[source] = counts.get(source, 0) + 1
-    lines = [f"  - {source} ({n} chunk(s))" for source, n in sorted(counts.items())]
-    return ToolResult(observation="corpus sources:\n" + "\n".join(lines))
+
+    tags, schema = _load_doc_tags(ctx.store)
+    lines = []
+    for source in sorted(counts):
+        doc_tags = tags.get(source, {})
+        tag_str = ", ".join(f"{axis}={value}" for axis, value in doc_tags.items()) or "untagged"
+        lines.append(f"  - {source} ({counts[source]} chunk(s)) [{tag_str}]")
+
+    header = "corpus sources"
+    if schema:
+        # A compact legend so the controller knows each axis's allowed values to filter on.
+        legend = "; ".join(f"{axis}: {{{', '.join(spec['values'])}}}" for axis, spec in schema.items())
+        header += f"\n(tags — {legend})"
+    corpus_map = header + ":\n" + "\n".join(lines)
+
+    # Emit the map BOTH as an observation (for the controller's routing) AND as an evidence hit,
+    # so it lands in the scratchpad and the GENERATOR can answer enumeration questions FROM it.
+    # Without the hit, the map reaches only the controller and the final answer is written from a
+    # different (often empty -> naive-fallback) context — the two-model split (DD-035).
+    map_hit = Hit(source="corpus_map", chunk_index=0, text=corpus_map, score=0.0)
+    return ToolResult(observation=corpus_map, hits=[map_hit])
 
 
 def _run_finish(args: NoArgs, ctx: ToolContext) -> ToolResult:
@@ -225,8 +266,10 @@ _TOOL_CATALOGUE: Dict[str, Tool] = {
     ),
     "list_sources": Tool(
         name="list_sources",
-        description="List every source document in the corpus (filename + size). Use to orient "
-                    "yourself on what exists before searching, if the query terms are unclear.",
+        description="List every source document with its metadata TAGS (topic/role per document). "
+                    "Use this to answer 'which/what documents are X' or 'list all docs that…' "
+                    "questions — read the tags and pick the matching documents — and to orient on "
+                    "what exists before searching. One call shows the whole corpus.",
         args_model=NoArgs, run=_run_list_sources,
     ),
     "finish": Tool(
