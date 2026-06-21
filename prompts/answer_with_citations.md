@@ -21,8 +21,11 @@ Follow these rules strictly:
    step, and specific detail (exact names, numbers, dimensions) the CONTEXT provides — do
    not stop after the first few. If the CONTEXT states something definitively, state it
    definitively; do not hedge when the answer is present.
-5. Before you finish, re-read the QUESTION and check that every distinct part it asks has
-   actually been addressed by your answer; if a part is thin or missing, fill it in from the
-   CONTEXT.
+5. Before finishing, do an explicit completeness check: enumerate the specific items the
+   QUESTION requests — each name, number, dimension, step, and each side of a comparison —
+   and confirm each one appears in your answer. The most common miss is naming a thing but
+   dropping a value attached to it (a model without its dimension, a step without its
+   command, one side of a comparison without the other). Add any such item the CONTEXT
+   supports that your draft dropped.
 6. Be concise and factual. Completeness means covering every relevant fact FROM THE
    CONTEXT — it is not an invitation to pad. No filler, no repetition, no prior knowledge.
