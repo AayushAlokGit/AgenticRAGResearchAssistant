@@ -94,13 +94,20 @@ class Scratchpad:
     hits: List[Hit] = field(default_factory=list)
     _seen: set = field(default_factory=set)  # (source, chunk_index) already held
 
-    def add(self, hits: List[Hit]) -> List[Hit]:
-        """Add hits not already held; return the newly-added ones (for logging/stop conditions)."""
+    def add(self, hits: List[Hit], retrieved_by: Optional[str] = None) -> List[Hit]:
+        """Add hits not already held; return the newly-added ones (for logging/stop conditions).
+
+        `retrieved_by` (the action that produced these hits) is stamped onto each NEWLY-added
+        chunk for provenance. Only the first action to surface a chunk gets the credit — a later
+        action that re-finds it adds nothing here, so the earliest retriever is recorded.
+        """
         new_hits = []
         for hit in hits:
             key = (hit.source, hit.chunk_index)
             if key not in self._seen:
                 self._seen.add(key)
+                if retrieved_by is not None:
+                    hit.retrieved_by = retrieved_by
                 self.hits.append(hit)
                 new_hits.append(hit)
         return new_hits
@@ -204,6 +211,20 @@ def router_view(scratchpad: List[Hit]) -> str:
     return "\n".join(lines)
 
 
+def provenance_label(tool: Tool, args: BaseModel) -> str:
+    """A short note of WHICH action surfaced a chunk, stamped onto each new hit for diagnosis.
+
+    For `search` it's the query string itself (the question the user actually asked here is
+    "which query found this?"); for other corpus tools it's `tool(args)` so a chunk pulled by
+    e.g. expand_document isn't mislabeled as a search query.
+    """
+    data = args.model_dump()
+    if "query" in data:
+        return str(data["query"])
+    args_repr = ", ".join(f"{k}={v}" for k, v in data.items())
+    return f"{tool.name}({args_repr})" if args_repr else tool.name
+
+
 def parse_and_validate(raw: str, registry: ToolRegistry) -> Optional[Decision]:
     """Parse the controller's JSON action and validate it against the registry.
 
@@ -292,7 +313,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
         args_repr = ", ".join(f"{k}={v}" for k, v in decision.args.model_dump().items())
         logger.info("agent: action=%s args={%s}", tool.name, args_repr)
         result = tool.run(decision.args, ctx)
-        new_hits = scratchpad.add(result.hits)
+        new_hits = scratchpad.add(result.hits, provenance_label(tool, decision.args))
 
         # A retrieval that returned hits but added NOTHING new re-found only evidence we already
         # hold. Detect it once here; it drives both the controller feedback (next) and the

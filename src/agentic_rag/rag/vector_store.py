@@ -12,7 +12,7 @@ so a different backend could replace it behind the same methods later.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import chromadb
 from chromadb.config import Settings
@@ -28,6 +28,11 @@ class Hit:
     chunk_index: int
     text: str
     score: float       # cosine similarity in [−1, 1]; higher = closer
+    # PROVENANCE (set by the agent loop, not retrieval): which action first surfaced this chunk
+    # — the search query, or a tool call for non-search tools. None on the naive single-shot path
+    # (the query is trivially the question). Lets a run record show WHICH reformulation found a
+    # second-hop doc. Stamped on first occurrence only (dedup keeps the earliest retriever).
+    retrieved_by: Optional[str] = None
 
 
 class ChromaVectorStore:
