@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -69,8 +68,42 @@ OSCILLATION_PATIENCE = 2
 # query-matching span, not the prefix). Deferred — no measured failure traces to this yet.
 CONTROLLER_SNIPPET_CHARS = 300
 
-# Tolerate the model wrapping its JSON in prose or ```json fences: grab the first {...} block.
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+def _extract_json_value(raw: str):
+    """Pull the first complete JSON object OR array out of the controller's reply.
+
+    The controller is told to emit ONLY JSON, but we tolerate it wrapping the value in prose or
+    ```json fences. We scan to the first '{' or '[' and walk to its MATCHING close, string-aware,
+    so a multi-action ARRAY survives intact — the old greedy `{.*}` regex could only grab an
+    object and would mangle `[{...}, {...}]`. Returns the decoded value, or None if none is found.
+    """
+    if not raw:
+        return None
+    start = next((i for i, ch in enumerate(raw) if ch in "{["), None)
+    if start is None:
+        return None
+    depth, in_str, esc = 0, False, False
+    for j in range(start, len(raw)):
+        ch = raw[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(raw[start:j + 1])
+                except (ValueError, TypeError):
+                    return None
+    return None
 
 
 @dataclass
@@ -118,24 +151,36 @@ class Scratchpad:
 
 @dataclass
 class Decision:
-    """The controller's chosen next action, already parsed AND validated against the registry."""
+    """ONE chosen action, already parsed AND validated against the registry (a single tool+args)."""
     thought: str
     tool: Tool
     args: BaseModel                              # validated Pydantic args for `tool`
-    usage: Usage = field(default_factory=Usage)  # controller token cost (sums retry attempts)
-    failed_attempts: int = 0                     # parse/validate failures before this decision
+
+
+@dataclass
+class ControllerTurn:
+    """The controller's whole reply for one round: a BATCH of one or more actions, plus cost.
+
+    B (loop-owned parallelism): the controller may answer with a single action OR a JSON array of
+    INDEPENDENT actions to run together this round. Token cost and parse-failure count belong to
+    the TURN — one controller call produced the whole batch — so they live here, not per-action.
+    """
+    decisions: List[Decision]
+    usage: Usage = field(default_factory=Usage)
+    failed_attempts: int = 0
 
 
 # ───────────────────────────── the controller (part 2) ─────────────────────────────
 
 def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry, question: str,
                        scratchpad: List[Hit], steps: List[AgentStep],
-                       rounds_left: int) -> Decision:
-    """Ask the model for the next action; re-ask if it returns no parseable+valid tool call.
+                       rounds_left: int) -> ControllerTurn:
+    """Ask the model for the next action(s); re-ask if it returns no parseable+valid tool call.
 
-    An action is valid only if it (a) parses as JSON, (b) names a known tool, and (c) its args
-    satisfy that tool's schema. If every attempt fails, return a FINISH decision — better to
-    answer from what we have than crash or spin on a broken controller (the evals' fail-safe).
+    The reply may be a single action OR a JSON array of independent actions to run together this
+    round (B). An action is valid only if it (a) parses as JSON, (b) names a known tool, and (c)
+    its args satisfy that tool's schema. If every attempt yields nothing valid, return a FINISH
+    turn — better to answer from what we have than crash or spin on a broken controller.
     """
     user_message = build_controller_prompt(question, scratchpad, steps, rounds_left)
     messages = [
@@ -155,16 +200,16 @@ def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry
         raw = completion.text or ""
         logger.debug("agent controller raw (attempt %d/%d): %r",
                      attempt, CONTROLLER_MAX_ATTEMPTS, raw.strip()[:300])
-        decision = parse_and_validate(raw, registry)
-        if decision is not None:
-            decision.usage = usage
-            decision.failed_attempts = failed
-            return decision
+        decisions = parse_and_validate(raw, registry)
+        if decisions:
+            return ControllerTurn(decisions=decisions, usage=usage, failed_attempts=failed)
         failed += 1
         logger.warning("agent controller: unparseable/invalid action (attempt %d/%d): %r",
                        attempt, CONTROLLER_MAX_ATTEMPTS, raw.strip()[:120])
-    return Decision(thought="(controller output unparseable; finishing)", tool=registry.get("finish"),
-                    args=registry.get("finish").args_model(), usage=usage, failed_attempts=failed)
+    finish = registry.get("finish")
+    fallback = Decision(thought="(controller output unparseable; finishing)", tool=finish,
+                        args=finish.args_model())
+    return ControllerTurn(decisions=[fallback], usage=usage, failed_attempts=failed)
 
 
 def build_controller_prompt(question: str, scratchpad: List[Hit],
@@ -178,7 +223,9 @@ def build_controller_prompt(question: str, scratchpad: List[Hit],
         f"QUESTION:\n{question}\n\n"
         f"ACTIONS TAKEN SO FAR (and what each returned):\n{format_history(steps)}\n\n"
         f"EVIDENCE GATHERED SO FAR (source + snippet of each chunk):\n{router_view(scratchpad)}\n\n"
-        f"Rounds remaining: {rounds_left}. Choose ONE action and output it as a single JSON object."
+        f"Rounds remaining: {rounds_left}. Output ONE action as a JSON object, or — if the question "
+        f"has INDEPENDENT parts you can pursue at once — a JSON ARRAY of actions to run together "
+        f"this round. Use a single action when the next step depends on this one's results."
     )
 
 
@@ -225,25 +272,36 @@ def provenance_label(tool: Tool, args: BaseModel) -> str:
     return f"{tool.name}({args_repr})" if args_repr else tool.name
 
 
-def parse_and_validate(raw: str, registry: ToolRegistry) -> Optional[Decision]:
-    """Parse the controller's JSON action and validate it against the registry.
+def parse_and_validate(raw: str, registry: ToolRegistry) -> Optional[List[Decision]]:
+    """Parse the controller's reply — one action OBJECT or an ARRAY of them — into Decisions.
 
-    Returns a Decision (tool + validated args) on success, or None if it can't be read or
-    isn't a valid call (caller re-asks). Three failure modes collapse to None: no JSON,
-    unknown tool, args that don't satisfy the tool's schema.
+    Returns a non-empty list (one Decision per VALID action) on success, or None if nothing
+    parseable/valid was found (caller re-asks). Inside an array, an individual malformed action is
+    DROPPED with a warning rather than failing the whole batch — one bad item shouldn't cost the
+    other independent searches their round — but if NONE survive, we re-ask.
     """
-    if not raw:
+    value = _extract_json_value(raw)
+    if value is None:
         return None
-    match = _JSON_OBJECT_RE.search(raw)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return None
+    items = value if isinstance(value, list) else [value]
+    decisions = []
+    for item in items:
+        decision = _decision_from_obj(item, registry)
+        if decision is not None:
+            decisions.append(decision)
+        else:
+            logger.warning("agent controller: dropped an invalid action in batch: %r", item)
+    return decisions or None
+
+
+def _decision_from_obj(data, registry: ToolRegistry) -> Optional[Decision]:
+    """Validate ONE action object into a Decision, or None if it isn't a valid call.
+
+    Three failure modes collapse to None: not an object, unknown tool, or args that don't satisfy
+    the tool's schema.
+    """
     if not isinstance(data, dict):
         return None
-
     action = str(data.get("action", "")).strip()
     thought = str(data.get("thought", "")).strip()
     raw_args = data.get("args", {})
@@ -291,20 +349,28 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     consecutive_redundant = 0    # redundant retrievals IN A ROW; resets on progress (oscillation guard)
     seeded_on_empty = False      # whether the empty-scratchpad guard has fired (fires at most once)
 
+    rounds_used = 0              # controller turns taken (the budget unit); a batch is ONE round
     for round_index in range(max_rounds):
         rounds_left = max_rounds - round_index
         logger.info("agent: --- round %d/%d --- scratchpad=%d chunk(s)",
                     round_index + 1, max_rounds, len(scratchpad))
 
-        decision = decide_next_action(controller_llm, react_prompt, registry, question,
-                                      scratchpad.hits, steps, rounds_left)
-        controller_usage = controller_usage + decision.usage
-        tool_errors += decision.failed_attempts
-        tool = decision.tool
-        tool_calls[tool.name] = tool_calls.get(tool.name, 0) + 1
-        logger.info("agent: think: %s", decision.thought or "(no thought given)")
+        turn = decide_next_action(controller_llm, react_prompt, registry, question,
+                                  scratchpad.hits, steps, rounds_left)
+        controller_usage = controller_usage + turn.usage
+        tool_errors += turn.failed_attempts
+        rounds_used += 1
+        for d in turn.decisions:
+            logger.info("agent: think: %s", d.thought or "(no thought given)")
 
-        if tool.terminal:  # finish
+        # Split the batch. Retrieval actions all run THIS round (B's parallelism). `finish` is
+        # honored only when it's the SOLE action — you don't gather and stop in one breath, so if
+        # the controller batches finish alongside searches we run the searches and drop the finish.
+        retrieval = [d for d in turn.decisions if not d.tool.terminal]
+
+        if not retrieval:  # finish-only turn
+            finish_decision = turn.decisions[0]
+            tool_calls["finish"] = tool_calls.get("finish", 0) + 1
             # GUARD (DD-039): never answer from an EMPTY scratchpad. The controller occasionally
             # picks `finish` on round 0 with zero evidence (a17), which silently degrades the run to
             # the naive single-retrieval fallback — the agent loop contributes nothing. Enforce the
@@ -315,64 +381,63 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
                 seeded_on_empty = True
                 seed_hits = retriever.query(question, top_k)
                 new_hits = scratchpad.add(seed_hits, retrieved_by="empty-finish-guard")
-                steps.append(AgentStep(decision.thought, tool.name,
+                steps.append(AgentStep(finish_decision.thought, "finish",
                              observation=f"[GUARD: cannot finish with no evidence gathered — seeded a "
                                          f"search on the question -> {len(new_hits)} chunk(s). Review them "
                                          f"and search further if parts are still unanswered.]"))
                 logger.info("agent: finish-on-empty-scratchpad -> seeded a search (%d chunk(s)), continuing",
                             len(new_hits))
                 continue
-            steps.append(AgentStep(decision.thought, tool.name, observation="(finish)"))
+            steps.append(AgentStep(finish_decision.thought, "finish", observation="(finish)"))
             logger.info("agent: action=FINISH (model judged the evidence sufficient)")
             exit_reason = "finish"
             break
 
-        # DISPATCH the chosen tool, then merge any evidence it produced (deduped).
-        args_repr = ", ".join(f"{k}={v}" for k, v in decision.args.model_dump().items())
-        logger.info("agent: action=%s args={%s}", tool.name, args_repr)
-        result = tool.run(decision.args, ctx)
-        new_hits = scratchpad.add(result.hits, provenance_label(tool, decision.args))
+        # DISPATCH every retrieval action in the batch, merging all evidence (deduped) for the round.
+        # Each action records its own step, so the history shows the controller exactly what each
+        # query found. round_new / round_returned_hits aggregate progress for the round's stop logic.
+        round_new = 0
+        round_returned_hits = False
+        for d in retrieval:
+            tool = d.tool
+            tool_calls[tool.name] = tool_calls.get(tool.name, 0) + 1
+            args_repr = ", ".join(f"{k}={v}" for k, v in d.args.model_dump().items())
+            logger.info("agent: action=%s args={%s}", tool.name, args_repr)
+            result = tool.run(d.args, ctx)
+            new_hits = scratchpad.add(result.hits, provenance_label(tool, d.args))
+            round_new += len(new_hits)
+            round_returned_hits = round_returned_hits or bool(result.hits)
+            steps.append(AgentStep(d.thought, tool.name, args_repr, result.observation, len(new_hits)))
+            logger.info("agent: -> %s | +%d new chunk(s) | scratchpad=%d",
+                        result.observation.splitlines()[0], len(new_hits), len(scratchpad))
 
-        # A retrieval that returned hits but added NOTHING new re-found only evidence we already
-        # hold. Detect it once here; it drives both the controller feedback (next) and the
-        # oscillation streak (below). A no-hit tool like list_sources legitimately adds nothing,
-        # so a round is "redundant" only when the tool DID return hits and all were duplicates.
-        is_redundant = bool(result.hits and not new_hits)
-
-        # FEED THE SIGNAL BACK: append a note to the observation the controller will see next
-        # round (via format_history). Without this, the stored observation just says "found N
-        # chunks", so at temperature 0 the controller has no reason to change course and may
-        # re-issue the same query. Telling it "these were duplicates — reformulate/switch/finish"
-        # is what turns the extra round Change 1 bought into an actual recovery.
-        observation = result.observation
+        # Round-level redundancy: the ROUND re-found only known evidence — it returned hits but
+        # added nothing new across the WHOLE batch. (A batch that surfaced even one new chunk made
+        # progress.) This drives both the controller feedback and the oscillation streak, just as
+        # before, but over the round's union instead of a single search — so a fan-out that fully
+        # duplicates trips the guard, while a partial hit keeps the loop alive.
+        is_redundant = bool(round_returned_hits and round_new == 0)
         if is_redundant:
-            observation += ("\n[NOTE: NO NEW EVIDENCE FOUND. Reformulate with DIFFERENT terms, try another tool, or"
-                            " finish if you already have enough to answer.]")
-        steps.append(AgentStep(decision.thought, tool.name, args_repr, observation, len(new_hits)))
-        logger.info("agent: -> %s | +%d new chunk(s) | scratchpad=%d",
-                    observation.splitlines()[0], len(new_hits), len(scratchpad))
-
-        # Stop condition (oscillation guard): ONE redundant round is a local stumble (bad
-        # phrasing), not proof the agent is stuck — so we count CONSECUTIVE redundant rounds and
-        # only stop once they reach OSCILLATION_PATIENCE. Any retrieval that DID add evidence
-        # resets the count, so the trip means "several unproductive rounds in a row", not "one
-        # duplicate ever".
-        if is_redundant:
+            # FEED THE SIGNAL BACK on the last step the controller will read next round: without
+            # it the history just says "found N chunks" and at temperature 0 the controller has no
+            # reason to change course. Telling it "these were duplicates" is what turns the round
+            # into a recovery rather than a repeat.
+            steps[-1].observation += ("\n[NOTE: NO NEW EVIDENCE this round. Reformulate with DIFFERENT terms, "
+                                      "try another tool, or finish if you already have enough to answer.]")
             redundant_searches += 1
             consecutive_redundant += 1
             if consecutive_redundant >= OSCILLATION_PATIENCE:
-                logger.info("agent: %d redundant retrieval(s) in a row — stopping (oscillation guard)",
+                logger.info("agent: %d redundant round(s) in a row — stopping (oscillation guard)",
                             consecutive_redundant)
                 exit_reason = "oscillation"
                 break
-            logger.info("agent: retrieval re-found only known evidence (%d/%d before stop) — continuing",
+            logger.info("agent: round re-found only known evidence (%d/%d before stop) — continuing",
                         consecutive_redundant, OSCILLATION_PATIENCE)
-        elif new_hits:
+        elif round_new:
             consecutive_redundant = 0  # progress clears the slate
 
-    n_actions = len(steps)
     logger.info("agent: loop done — %d round(s) used, calls=%s, %d chunk(s) gathered, exit=%s",
-                n_actions, tool_calls, len(scratchpad), exit_reason)
+                rounds_used, tool_calls, len(scratchpad), exit_reason)
 
     result = answer_from_evidence(question, scratchpad, retriever, llm, answer_prompt,
                                   top_k, answer_char_budget)
@@ -380,7 +445,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     # Attribute the controller (routing) cost to its own bucket; the generator bucket was set
     # by the answer call above. Kept separate so a tiered run shows each role's cost (DD-025).
     result.controller_usage = controller_usage
-    result.trajectory = Trajectory(rounds_used=n_actions, exit_reason=exit_reason,
+    result.trajectory = Trajectory(rounds_used=rounds_used, exit_reason=exit_reason,
                                    tool_calls=tool_calls, tool_errors=tool_errors,
                                    redundant_searches=redundant_searches)
     total_calls = result.controller_usage.calls + result.generator_usage.calls
