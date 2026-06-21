@@ -10,7 +10,8 @@ llm:
   roles:
     controller: {provider: gemini, model: gemini-2.5-flash}
     generator: {provider: gemini, model: gemini-2.5-flash}
-    judge: {provider: gemini, model: gemini-2.5-flash-lite}
+    judge: {provider: gemini, model: gemini-2.5-flash}
+    # judge: {provider: groq, model: meta-llama/llama-4-scout-17b-16e-instruct} # different family from the gemini generator (DD-013 self-grade avoidance); paired with the redesigned grading prompt
   temperature: 0.0 # near-deterministic for reproducible evals
   max_tokens: 1024
   max_retries: 5 # provider-level backoff before the router falls through to the next tier
