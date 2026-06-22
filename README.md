@@ -15,7 +15,7 @@ flowchart LR
   S --> H[hybrid retrieve<br/>dense + BM25 / RRF]
   H --> R[cross-encoder<br/>rerank]
   R --> P[parent-child<br/>expansion]
-  P --> L[ReAct loop<br/>search ↔ finish, max 3]
+  P --> L[ReAct loop<br/>search · list_sources · finish<br/>action batching, max 5]
   L --> A[grounded +<br/>cited answer]
   E[eval harness · recall / correctness / faithfulness] -. change → measure → keep / revert .-> H
 ```
@@ -110,8 +110,9 @@ evidence.
 1. **RAG substrate** — content-hash idempotent ingestion, fixed-size chunking, hybrid
    retrieval (dense + BM25 fused by RRF), cross-encoder reranking, parent-child expansion,
    cited answers, a "not enough info" path. *(done)*
-2. **Agentic layer** — hand-rolled ReAct loop with a search/finish controller, a round
-   budget, and oscillation/budget stop conditions. *(done)*
+2. **Agentic layer** — hand-rolled ReAct loop: a `[search, list_sources, finish]` controller
+   that can fan out independent searches in one round (action batching), a round budget, and
+   oscillation/budget/empty-finish stop conditions. *(done)*
 3. **Context engineering** — router-view for the controller, token-budgeted final answer;
    heavier selection strategies explored and mostly reverted (DD-023). *(explored)*
 4. **Memory** — working + long-term memory across sessions. *(not started — `memory/` is a stub)*
@@ -131,7 +132,7 @@ evidence.
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .                 # editable install
-copy .env.example .env           # then add GOOGLE_API_KEY (generator) + GROQ_API_KEY (judge)
+copy .env.example .env           # then add GOOGLE_API_KEY (all LLM roles); GROQ_API_KEY optional (fallback tier)
 
 python -m agentic_rag.rag.ingest                       # build the ChromaDB index from corpus/
 python -m agentic_rag.agent.loop "your multi-hop question here"   # run the agent

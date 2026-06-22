@@ -66,16 +66,14 @@ Five modules (see `docs/ProjectIdea.md` for detail), built in order:
 
 - **Design decisions** are tracked in `DESIGN_DECISIONS.md` — one short line each, newest
   first. When a real architectural fork is resolved, add a one-liner there. Keep it terse.
-- **LLM layer:** **Groq-only for now** — the available provider key; Groq's LPU inference
-  is fast, which suits the eval loop (DD-004). Per-role models (DD-013): generator
-  `llama-3.3-70b-versatile`, judge `openai/gpt-oss-120b` — a different family so the judge
-  doesn't self-grade, and each role gets its own daily-token bucket.
-  Embeddings are kept **local** (`all-MiniLM-L6-v2`) — and **must** be, because Groq has no
-  embeddings endpoint (text-gen + Whisper only); local is also the lightweight choice for
-  limited hardware. The provider-fallback router remains a learning goal: the layer is
-  built *router-shaped but single-tier* now (provider_order is a list), and expanded to
-  more tiers once additional keys exist and the naive loop + evals can prove the router
-  doesn't degrade quality.
+- **LLM layer:** all roles (controller, generator, judge) currently run **`gemini-2.5-flash`**
+  (`config/default.yaml`; `provider_order: [gemini, groq]`). The judge was recalibrated from
+  the cheaper flash-lite to flash with a redesigned grading prompt (DD-037) — flash-lite read
+  biased-low. (Earlier lineage was Groq-only — generator `llama-3.3-70b`, judge `gpt-oss-120b`
+  (DD-004/013); superseded.) Embeddings are kept **local** (`all-MiniLM-L6-v2`) — and **must**
+  be, because the text-gen providers have no embeddings endpoint; local is also the lightweight
+  choice for limited hardware. The provider-fallback router is now genuinely multi-tier
+  (`provider_order` is a list, Gemini → Groq); expanding/proving it further remains a learning goal.
 - **Versioning:** keep prompts, configs, and corpus versioned so single changes can be
   A/B tested against the eval set.
 

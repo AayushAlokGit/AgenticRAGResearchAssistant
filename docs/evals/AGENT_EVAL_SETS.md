@@ -11,6 +11,12 @@
 > this project's `agentic.yaml`, Part 3 is a checklist for a brand-new agent system.
 > RAG is the worked example; the principles apply to any tool-using agent — a coding
 > agent, a travel-booking agent, a customer-support bot that can look things up.
+>
+> **NOTE (2026-06-21):** the action space is now `[search, list_sources, finish]` — the
+> `expand_document` / `expand_around_chunk` tools used in the tool-selection examples below were
+> A/B'd and DROPPED (DD-031). Those cases (a05/a06/a12/a18) now run search-only as OUTCOME-only
+> probes with no `expects_tool` trajectory assertion (the dataset was realigned accordingly). The
+> eval-set *design principles* in this doc are unchanged; only those specific tool references are stale.
 
 ---
 

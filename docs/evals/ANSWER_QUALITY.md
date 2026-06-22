@@ -79,10 +79,13 @@ a separate eval whose judge compares the answer to the *retrieved chunks* instea
 reference.
 
 Honest caveats already noted in-code:
-- The judge is a **different model** from the generator (DD-013: `llama-3.3-70b` generates,
-  `gpt-oss-120b` judges) — a different family avoids **self-evaluation bias** and gives the
-  judge its own provider rate-limit bucket. (Pointing both roles at one model brings the
-  bias back; the eval's report line flags which case is active.)
+- **Self-evaluation bias.** The original setup used a *different* judge family (DD-013:
+  `llama-3.3-70b` generates, `gpt-oss-120b` judges). The system since moved all roles to
+  `gemini-2.5-flash` (DD-037, after the cheaper flash-lite judge read biased-low), so the judge
+  now SHARES the generator's family — mild self-grade bias, accepted, and mitigated by a
+  redesigned grading prompt (reference = a standard not an exhaustive key; mark down only for
+  omission/contradiction) plus dual strict/partial-credit metrics. The eval's report line flags
+  when generator and judge are the same model.
 - Generation + judging are **non-deterministic**, so this metric has run-to-run variance,
   unlike the deterministic retrieval recall. Look for clear movement, not small deltas.
 - q22 (caught by correctness) and the q01/q25/q26 false abstentions (retrieval gaps

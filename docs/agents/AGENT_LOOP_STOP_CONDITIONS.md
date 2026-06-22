@@ -104,7 +104,13 @@ guard is stopping good trajectories early. That gap is the whole diagnosis.
 
 Our loop (`src/agentic_rag/agent/loop.py`) has all three brakes: `max_rounds` (hard budget),
 a `finish` tool (voluntary), and an **oscillation guard** (progress-based) — a retrieval that
-returns hits but *no new* chunks means we re-found only evidence we already hold.
+returns hits but *no new* chunks means we re-found only evidence we already hold. A fourth,
+structural brake was later added: the **empty-finish guard** (DD-039) — never honour `finish`
+with an empty scratchpad; seed one search and continue, so the loop can't degrade to a
+zero-evidence naive fallback. (Later still, a family of *aggressive* early-stop guards — yield-ratio
+and repeat-query similarity — was tried to cut single-shot over-search and ALL REJECTED, DD-042:
+they traded correctness + faithfulness for efficiency, because the "extra" rounds quietly accrete
+coverage and grounding. The patience-based oscillation guard below remains the tuned middle brake.)
 
 **The bug (the textbook version of Principle 1).** The original guard hard-`break`ed the
 instant *one* retrieval was redundant. That is the local-signal/global-decision error exactly.

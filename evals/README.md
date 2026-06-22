@@ -50,10 +50,13 @@ are what discriminate. Each run writes a JSON to `eval_runs/` (gitignored) for d
 Run the set before/after every meaningful change and keep the score deltas. The
 change -> measure -> keep-or-revert loop is the real skill this project is practicing.
 
-Status: **`datasets/seed.yaml` v2 (32 questions: 29 answerable + 3 abstention) over the
-frozen 11-doc corpus, and the retrieval scorer, both exist.** v2 hardened the set
-(q13–q32) so recall@5 no longer saturates. Baselines over the 29 recall-eligible
-questions (MiniLM, 800/100 char chunks):
+Status: **two datasets now exist.** `datasets/seed.yaml` (**43 questions**, grown from v2's 32)
+is the HELD-OUT generalization set over the frozen 11-doc corpus; `datasets/agentic.yaml`
+(**25 questions**, capability-tagged) is the PRIMARY agentic gate (`evals/agentic_eval.py`) and
+the corpus has grown to a second domain. The retrieval scorer also exists. **Current agentic
+champion (agentic.yaml, n=3): e2e 0.746 / partial-credit 0.893 / faithfulness 0.984.** The
+recall/correctness numbers below are the older pure-RAG-lineage baselines (pre-rerank/parent-
+expansion), kept as the methodology illustration — not the current pipeline's scores:
 
 | mode | recall@1 | recall@3 | recall@5 | MRR |
 |------|----------|----------|----------|-----|

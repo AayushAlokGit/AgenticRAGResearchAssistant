@@ -110,9 +110,9 @@ constant.
 Now map Part 1 onto what we've actually built. The general lever is on the left; what
 this project does (and the design-decision / experiment it traces to) is on the right.
 
-**Our system's dials (P4):** short-horizon (`max_rounds=3`), few-tools (one:
-`search`), single-agent. So by P4 we *should* be living in Select / Order / light
-Compress — and we are.
+**Our system's dials (P4):** short-horizon (`max_rounds=5`), few-tools
+(`[search, list_sources, finish]`), single-agent. So by P4 we *should* be living in
+Select / Order / light Compress — and we are.
 
 | Lever | In this project | Status |
 |---|---|---|
@@ -154,8 +154,9 @@ that began as a *survival* hack now earns its keep as a *quality* filter.
 
 - **Real Compress (LLM compaction).** True compaction = an LLM *summarizes* the
   scratchpad/history into fewer tokens. We do the cheap structural version (snippets +
-  trim) but not summarization. At `max_rounds=3` the scratchpad never gets big enough
-  to need it. *This is the first deferred lever we have the machinery to measure* — a
+  trim) but not summarization. At `max_rounds=5` the scratchpad still rarely gets big
+  enough to need it (a batched round can gather more at once — DD-041 — but the char-budget
+  trim keeps it bounded). *This is the first deferred lever we have the machinery to measure* — a
   summarize-the-scratchpad A/B is the natural next experiment.
 - **Persist (memory).** Module 4. Needed the moment we want the system to get smarter
   *across* sessions — the project's stated goal, not yet reached.

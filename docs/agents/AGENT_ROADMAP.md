@@ -92,6 +92,26 @@ don't exist yet because there's nothing to select between. So the curriculum sta
 
 ## Progress Log *(newest first; update when an increment lands)*
 
+- **2026-06-21 — Agentic system built out DD-029 → DD-042 (full detail in `DESIGN_DECISIONS.md`).**
+  Burst of eval-gated increments since the DD-028 baseline; current state in one place:
+  - **Action space LEANED to `[search, list_sources, finish]`** — both `expand_document` and
+    `expand_around_chunk` were A/B'd and DROPPED (DD-031: regressed v1-solid Qs, rarely fired).
+    (Supersedes the four-tool A1 plan below.)
+  - **Stop conditions:** oscillation guard kept at patience=2 + redundant-search feedback (DD-029);
+    controller **empty-finish guard** — never answer from an empty scratchpad (DD-039).
+  - **Retrieval:** parent-expansion RE-ENABLED at **window=2** (DD-038/039); tagging — induced closed
+    tag schema + per-doc tags exposed via the `list_sources` corpus map for cross-doc enumeration (DD-036).
+  - **Controller ACTION BATCHING (DD-041, current champion):** the controller may emit a JSON ARRAY of
+    actions; the loop runs every non-terminal one in a single round (hand-rolled parallel tool-calls,
+    the precursor to A2). Tools stay atomic.
+  - **Generator:** item-level self-check in `answer_with_citations` (DD-040). **Judge:** recalibrated
+    flash-lite → `gemini-2.5-flash` + redesigned prompt (DD-037). All roles now `gemini-2.5-flash`.
+  - **Tried + REJECTED:** doc_expansion + answer-verification (DD-040), conflict-prompt (DD-039), and a
+    whole family of stopping-discipline / early-stop guards — yield-ratio + repeat-query lexical/semantic
+    (DD-042: traded correctness+faithfulness for efficiency; the "over-search" rounds accrete grounding).
+  - **Champion baseline (agentic.yaml, 25 Q, n=3):** e2e **0.746** / pc_overall **0.893** / faith **0.984**;
+    held-out seed.yaml (43 Q) ≈0.858. **Open frontiers:** a05 single-intent recall, a24 conflict-synthesis,
+    or pivot to a new module (context-engineering / memory).
 - **2026-06-19 — FIRST AGENTIC BASELINE established (new-lineage anchor) — DD-028.** Ran
   `evals/agentic_eval.py` over the new `agentic.yaml` (16 capability-tagged Qs across two
   corpus domains: the RAG-server docs + a newly-ingested 7-doc claims-ETL pipeline). Baseline

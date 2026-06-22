@@ -8,6 +8,14 @@ prompt, four-tool, `max_rounds:5`. Outcome mean **0.76** (11–14/16). All local
 > abstention (a08), closed by an abstention-guard prompt bullet (a08/a09/a13 back to 3/3). New
 > baseline **0.917** (14–15/16). **Still open:** **a16** (F5 synthesis-incompleteness) and **a07**
 > (F6 judge-borderline filename survey) — the next levers. a17 (F4) currently passing but judge-noisy.
+>
+> **STATUS (2026-06-21, current — DD-031→042):** this doc is a historical v1 (16-Q) snapshot. Since
+> then the four-tool set was LEANED to `[search, list_sources, finish]` (expand_* dropped, DD-031),
+> parent-expansion is ON window=2 (DD-038), tagging fixed cross-doc enumeration (DD-036), the judge
+> was recalibrated to `gemini-2.5-flash` (DD-037), and **action batching is the champion** (DD-041).
+> Any reference below to `expand_document`/`expand_around_chunk` as a live lever is stale. Current
+> champion = **e2e 0.746 / pc 0.893 / faith 0.984** on agentic.yaml (25 Q, n=3); remaining gaps are
+> a05 (single-intent recall) and a24 (conflict-synthesis). Live failure tracking → `DESIGN_DECISIONS.md`.
 
 ## Headline signal: deliberate `finish` beats getting cut off
 
