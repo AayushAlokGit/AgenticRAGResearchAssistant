@@ -37,7 +37,7 @@ from agentic_rag.evals.answer_correctness import (UNGRADED, aggregate_trajectory
 from agentic_rag.evals.faithfulness import check_citations, judge_faithfulness
 from agentic_rag.evals.dataset import (EvalQuestion, TrajectoryExpectation, eval_dataset_version,
                                        load_eval_dataset, validate_trajectory_expectations)
-from agentic_rag.evals.runs import (agent_config_snapshot, eval_run_path,
+from agentic_rag.evals.runs import (agent_config_snapshot, context_config_snapshot, eval_run_path,
                                     retrieval_config_snapshot, usage_record)
 from agentic_rag.llm.provider import Usage, build_llm, role_model
 from agentic_rag.logging_setup import configure_run_logging
@@ -328,6 +328,14 @@ def report(results: List[AgenticResult], config: dict) -> dict:
         traj_part = f"{s['traj_passed']}/{s['traj_asserted']}" if s["traj_asserted"] else "—"
         logger.info(f"  {cap:<24} outcome {s['outcome_ok']}/{s['total']}   trajectory {traj_part}")
 
+    # ---- CONTEXT COST axis (the silent one — context-eng wins show here, not in correctness) ----
+    context_cost = context_cost_report(results)
+    logger.info("\nCONTEXT COST (the silent axis — context-eng wins show here, not in correctness):")
+    logger.info(f"  structural (provider-neutral): ~{context_cost['avg_evidence_chunks']:.1f} evidence chunk(s)/Q | "
+                f"~{context_cost['avg_evidence_chars']:.0f} chars/Q assembled")
+    logger.info(f"  billed (prompt tokens): controller ~{context_cost['avg_controller_prompt_tokens']:.0f}/Q | "
+                f"generator ~{context_cost['avg_generator_prompt_tokens']:.0f}/Q")
+
     # ---- Cost + aggregate trajectory (reused) ----
     ctrl_total, gen_total, judge_total = Usage(), Usage(), Usage()
     for r in results:
@@ -372,6 +380,7 @@ def report(results: List[AgenticResult], config: dict) -> dict:
         "faithfulness": faith_summary,   # None on a --no-faithfulness run
         "by_capability": per_capability,
         "trajectory_totals": traj_aggregate,
+        "context_cost": context_cost,    # the silent context-engineering axis (structural + billed)
     }
 
 
@@ -422,6 +431,32 @@ def faithfulness_report(results: List[AgenticResult]) -> Optional[dict]:
         "graded": n_graded,
         "faithfulness": rate,
         "citation_hallucinations": len(cite_hallucinations),
+    }
+
+
+def context_cost_report(results: List[AgenticResult]) -> dict:
+    """The CONTEXT-ENGINEERING cost axis: how big a window we assembled per question, and
+    what it billed. Context-eng wins are often SILENT on correctness but show here — a
+    dedup/prune/compact lever shrinks the assembled context while the answer stays the same.
+    Two meter kinds, on purpose:
+      - STRUCTURAL (provider-neutral): evidence chunks + chars actually assembled. What the
+        context levers directly move; comparable across providers (counts-not-dollars, runs.py)
+        — so this is the clean A/B gauge.
+      - BILLED (provider-specific): prompt/context tokens paid, split controller (accumulates
+        over rounds) vs generator (the final-answer window) — the reality check, but it shifts
+        if you swap models, so it's noisier as a gauge.
+    Averaged per question so it reads as an A/B gauge.
+    """
+    n = len(results) or 1
+    total_chunks = sum(len(r.retrieved) for r in results)
+    total_chars = sum(len(h.text) for r in results for h in r.retrieved)
+    ctrl_prompt = sum(r.controller_usage.prompt_tokens for r in results)
+    gen_prompt = sum(r.generator_usage.prompt_tokens for r in results)
+    return {
+        "avg_evidence_chunks": total_chunks / n,
+        "avg_evidence_chars": total_chars / n,
+        "avg_controller_prompt_tokens": ctrl_prompt / n,
+        "avg_generator_prompt_tokens": gen_prompt / n,
     }
 
 
@@ -497,6 +532,7 @@ def persist(summary: dict, results: List[AgenticResult], config: dict, version: 
         "max_tokens": config["llm"]["max_tokens"],
         "retrieval": retrieval_config_snapshot(config),
         "agent": agent_config_snapshot(config),
+        "context": context_config_snapshot(config),
     }
     record = {
         "timestamp": path.stem,

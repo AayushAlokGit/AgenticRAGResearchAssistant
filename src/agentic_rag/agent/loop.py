@@ -40,6 +40,7 @@ from typing import List, Optional
 from pydantic import BaseModel, ValidationError
 
 from agentic_rag.agent.tools import DEFAULT_TOOLS, Tool, ToolContext, ToolRegistry, build_registry
+from agentic_rag.context import order_evidence
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.answer import (AnswerResult, Trajectory, assemble_context, generate_answer,
                                     load_prompt)
@@ -322,7 +323,8 @@ def _decision_from_obj(data, registry: ToolRegistry) -> Optional[Decision]:
 
 def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: str,
               top_k: int, max_rounds: int, answer_char_budget: int,
-              registry: ToolRegistry, store, controller_llm=None) -> AnswerResult:
+              registry: ToolRegistry, store, controller_llm=None,
+              ordering: str = "arrival") -> AnswerResult:
     """Run the retrieve -> reason -> act loop, then answer from the gathered evidence.
 
     `llm` writes the final answer (the generator); `controller_llm` makes the routing
@@ -440,7 +442,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
                 rounds_used, tool_calls, len(scratchpad), exit_reason)
 
     result = answer_from_evidence(question, scratchpad, retriever, llm, answer_prompt,
-                                  top_k, answer_char_budget)
+                                  top_k, answer_char_budget, ordering)
 
     # Attribute the controller (routing) cost to its own bucket; the generator bucket was set
     # by the answer call above. Kept separate so a tiered run shows each role's cost (DD-025).
@@ -479,13 +481,16 @@ def select_within_budget(scratchpad: List[Hit], char_budget: int) -> List[Hit]:
 
 
 def answer_from_evidence(question: str, scratchpad: Scratchpad, retriever, llm, answer_prompt: str,
-                         top_k: int, answer_char_budget: int) -> AnswerResult:
+                         top_k: int, answer_char_budget: int,
+                         ordering: str = "arrival") -> AnswerResult:
     """Write the final cited answer from the gathered evidence (the loop's second job).
 
-    The evidence is TRIMMED to fit the model's per-request ceiling (token budgeting) and
-    answered with the same cited-answer step as the naive pipeline. If the loop finished
-    without retrieving anything, fall back to one direct retrieval so we never answer on
-    empty context.
+    The evidence is TRIMMED to fit the model's per-request ceiling (token budgeting), then
+    ORDERED for the generator (the lost-in-the-middle lever — `context.ordering`), and answered
+    with the same cited-answer step as the naive pipeline. Trim-then-order is the right
+    composition: the budget decides WHICH chunks survive (arrival-order, keeping early-hop
+    evidence), ordering decides WHERE the survivors sit. If the loop finished without retrieving
+    anything, fall back to one direct retrieval so we never answer on empty context.
     """
     if not scratchpad.hits:
         logger.info("agent: empty scratchpad — falling back to a single naive retrieval")
@@ -494,7 +499,8 @@ def answer_from_evidence(question: str, scratchpad: Scratchpad, retriever, llm, 
     if len(selected) < len(scratchpad):
         logger.info("agent: compaction — trimmed %d -> %d chunk(s) to fit the %d-char budget",
                     len(scratchpad), len(selected), answer_char_budget)
-    return generate_from_scratchpad(question, selected, llm, answer_prompt)
+    ordered = order_evidence(selected, ordering)
+    return generate_from_scratchpad(question, ordered, llm, answer_prompt)
 
 
 def generate_from_scratchpad(question: str, scratchpad: List[Hit], llm, answer_prompt: str) -> AnswerResult:
@@ -534,13 +540,14 @@ class Answerer:
     controller_llm: object = None     # the agent's routing brain; defaults to llm (same model)
     registry: ToolRegistry = None     # the agent's action space (agent.tools)
     store: object = None              # backs corpus-reading tools (expand_document, list_sources)
+    ordering: str = "arrival"         # Module-3 ORDER lever for the final window (context.ordering)
 
     def answer(self, question: str) -> AnswerResult:
         if self.agentic:
             return run_agent(question, self.retriever, self.llm, self.react_prompt,
                              self.answer_prompt, self.top_k, self.max_rounds,
                              self.answer_char_budget, self.registry, self.store,
-                             controller_llm=self.controller_llm)
+                             controller_llm=self.controller_llm, ordering=self.ordering)
         return generate_answer(question, self.retriever, self.llm, self.answer_prompt, self.top_k)
 
 
@@ -580,8 +587,10 @@ def build_answerer(config: dict, retriever, llm, controller_llm=None) -> Answere
         # The action space (agent.tools); default reproduces the pre-A1 champion (search+finish).
         registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
 
+    ordering = config.get("context", {}).get("ordering", "arrival")  # Module-3 ORDER lever
     return Answerer(retriever, llm, answer_prompt, top_k, agentic, react_prompt, max_rounds,
-                    answer_char_budget, controller_llm=controller_llm, registry=registry, store=store)
+                    answer_char_budget, controller_llm=controller_llm, registry=registry, store=store,
+                    ordering=ordering)
 
 
 # ───────────────────────────── manual single-question run ─────────────────────────────
@@ -616,10 +625,12 @@ def main() -> None:
     answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
     tool_names = [t.strip() for t in args.tools.split(",")] if args.tools else agent_cfg.get("tools", DEFAULT_TOOLS)
     registry, store = build_agent_deps(config, tool_names)
+    ordering = config.get("context", {}).get("ordering", "arrival")
 
     question = " ".join(args.question)
     result = run_agent(question, retriever, llm, react_prompt, answer_prompt, top_k, max_rounds,
-                       answer_char_budget, registry, store, controller_llm=controller_llm)
+                       answer_char_budget, registry, store, controller_llm=controller_llm,
+                       ordering=ordering)
 
     print(f"\nQ: {result.question}\n")
     print(f"A: {result.answer}\n")

@@ -70,6 +70,20 @@ agent:
   # (0 vs 16000) on this pipeline before re-enabling.
   answer_char_budget: 0
 
+context:
+  # Module 3: context engineering — how the gathered evidence is curated into the final
+  # answer window. A/B knob, scored on the agentic set vs both correctness AND the new
+  # context-cost axis (eval_runs summary.context_cost).
+  ordering: arrival # arrival | relevance_last | u_shaped — final-answer evidence order.
+                    # Fights lost-in-the-middle: arrival reproduces the champion; relevance_last
+                    # puts the most-relevant chunk LAST (nearest the question = peak attention);
+                    # u_shaped puts the best at both ends, weakest in the middle. Cost-neutral
+                    # (reshuffles the same chunks), so the context-cost meters act as a control.
+                    # relevance_last A/B'd n=1 vs arrival: DEAD FLAT, reverted (DD-043).
+  # (A lossless overlapping-window DEDUP lever was tried and UNWIRED — n=3 it cut tokens 27% but
+  #  regressed completeness + faithfulness despite dropping no facts. The function is kept in the
+  #  context/ package for reference; no config knob. See DD-044 / EXPERIMENTS v2-14.)
+
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
 

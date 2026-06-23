@@ -6,12 +6,19 @@
 > Learn Part 1 as the skill; treat Part 2 as one dialect of it; use Part 3 when you
 > start a different system.
 
-This doc exists because of a question worth taking seriously: *is context engineering
-just token-budgeting and reordering — a few simple things — or is there more?* The
-honest answer is that the **levers are few and universal, but which ones you reach
-for is dictated by your system's shape, not by how "advanced" you want to be.** Our
-system is small, so it correctly uses the small end of the toolbox. That's not the
-whole toolbox.
+This doc exists because of two questions worth taking seriously, asked from opposite
+sides: *is context engineering just token-budgeting and reordering — too trivial to
+study?* and *is it just an umbrella for a sprawl of efficiency tricks — too varied to
+have a spine?* The honest answer to both: it's a **structured umbrella.** Under the
+open-ended sprawl of named techniques (RAG, reranking, summarization, sub-agents,
+memory, lazy-loading…) sits a small fixed skeleton — a couple of failure modes that
+explain *why* (P1–P2), a *closed* set of seven levers that are the *what* (P3), and
+three dials that decide *which* levers a given system actually needs (P4). Every
+technique you can name is just an instance of one of the seven. So it's neither
+trivial nor chaotic: the **levers are few and universal, but which ones you reach for
+is dictated by your system's shape, not by how "advanced" you want to be** — the skill
+is dial-reading, not trick-collecting. Our system is small, so it correctly uses the
+small end of the toolbox. That's not the whole toolbox.
 
 ---
 
@@ -149,6 +156,20 @@ fairer/all evidence" is not free:
 
 The plain arrival-order trim beat all three. The lesson is pure Part 1: the budget
 that began as a *survival* hack now earns its keep as a *quality* filter.
+
+**Module 3 proper: both applicable levers measured, both null/negative (DD-043/044).** When
+we formally opened this module we added a **context-cost eval axis** (structural chunks+chars/Q
+plus billed prompt-tokens/Q — the silent gauge for cost-moving levers) and tested the two levers
+our dials light up. **ORDER** (`relevance_last`, most-relevant nearest the question) came back
+DEAD FLAT — at ~8 chunks the window is too short for lost-in-the-middle to bite. **Structural
+DEDUP** (lossless merge of overlapping parent-expansion windows) cut tokens −27% but **regressed
+completeness *and* faithfulness at n=3** (pc −0.079, faith −0.095). The sharp part: we *proved*
+it dropped zero facts, so the harm was pure loss of **repetition-as-salience** — duplicated
+evidence was implicitly emphasising facts, and the generator leaned on it. This is P4 made
+concrete: a short-horizon / few-tools / single-agent system genuinely has little
+context-engineering headroom — not a failure to find a win, a *measurement* that the headroom
+isn't here. (It also sharpens P2: even *provably-lossless* compression can cost quality, because
+attention responds to repetition, not just to information content.)
 
 **What we deliberately have NOT built (and why it's correct not to, for now):**
 

@@ -91,3 +91,14 @@ def retrieval_config_snapshot(config: dict) -> dict:
         "multi_query": mq_on,
         "multi_query_n": multi_query.get("n_queries") if mq_on else None,
     }
+
+
+def context_config_snapshot(config: dict) -> dict:
+    """The Module-3 context-engineering knobs, embedded in run records so a run says HOW it
+    curated the final answer window (ordering, …) — makes a context-eng A/B reproducible from
+    the file alone, the same way the retrieval/agent snapshots already are.
+    """
+    context = config.get("context", {})
+    return {
+        "ordering": context.get("ordering", "arrival"),
+    }
