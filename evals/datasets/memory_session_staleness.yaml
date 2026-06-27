@@ -1,0 +1,119 @@
+# Memory eval — SESSION 3: recency / staleness handling (capability D)
+#
+# WHAT THIS TESTS (docs/memory/MEMORY_CAPABILITIES.md, capability D): when the WORLD CHANGES,
+# the system must prefer FRESH truth over a stale memory. The failure mode is the most
+# dangerous memory bug there is — confidently serving an out-of-date CACHED answer after the
+# source changed. It's a faithfulness failure that looks perfectly fluent.
+#
+# THE MECHANISM (controlled corpus change): the fixture doc evals/fixtures/staleness/
+# acme_search_service.v{1,2}.md describes a FICTIONAL service whose facts live nowhere else
+# in the corpus. The runner:
+#   phase 1: add v1 to the corpus + ingest  →  answer session-1 questions (seeds the store)
+#   ⟦ CORPUS CHANGE ⟧: swap v1→v2, re-ingest (the embedding model / result count / refresh change)
+#   phase 2: answer session-2 questions  →  cleanup: remove the fixture, re-ingest
+#
+# THE CONTRAST (the whole lesson): in phase 2, recall on the CHANGED facts (s04/s05) must be
+# INVALIDATED — the answer must reflect v2, not the cached v1. But recall on an UNCHANGED doc
+# (s06, normalization) must still FIRE for its cost win. Forgetting is TARGETED, not blanket:
+# keep the safe recall, drop the stale one.
+#
+# *** HEADROOM (read this) ***  EXPECTED to FAIL under slice-1 (the episodic soft cache). A
+# write+read cache with no freshness check WILL serve the stale v1 answer for s04/s05 — that
+# IS the gap this session exists to expose, and the motivation for building FORGET / refresh
+# (arc step 2). A failing s04/s05 here is the intended baseline, not a regression; it should
+# flip to passing once invalidation is built.
+#
+# Extra fields: role, relates_to, expect_recall, session + `expect_fresh: true` (the answer
+# MUST come from the current source, recall must NOT override it).
+
+version: 1
+corpus: ./corpus     # + the staleness fixture, added/swapped/removed by the runner
+
+questions:
+  # ═══ SESSION 1 — fixture v1 in the corpus; seed the store ════════════════════════════════════
+  - id: s01
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "Which embedding model does the ACME Search Service run?"
+    match: any
+    expected_sources:
+      - acme_search_service.md
+    should_abstain: false
+    expected_answer: "The ACME Search Service runs the acme-embed-v1 embedding model."
+    notes: "Seed of a CHANGING fact (v1 = acme-embed-v1). Re-asked as s04 after the corpus change."
+
+  - id: s02
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "How many results does the ACME Search Service return by default?"
+    match: any
+    expected_sources:
+      - acme_search_service.md
+    should_abstain: false
+    expected_answer: "By default the ACME Search Service returns the top 8 results for each query."
+    notes: "Seed of a CHANGING fact (v1 = 8). Re-asked as s05 after the corpus change."
+
+  - id: s03
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "In vector search, why are embeddings normalized to unit length before they're stored?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b — and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics ride on L2-optimized index machinery."
+    notes: "CONTROL seed on an UNCHANGED doc. Re-asked as s06 — recall here must still fire (the safe cost win), proving forgetting is targeted not blanket."
+
+  # ── ⟦ CORPUS CHANGE ⟧ — runner swaps fixture v1→v2 and re-ingests (model→v2, results→15, refresh→2h) ──
+
+  # ═══ SESSION 2 — fixture v2 now in the corpus; fresh truth must win over stale memory ════════
+  - id: s04
+    session: 2
+    role: repeat
+    relates_to: s01
+    expect_recall: false
+    expect_fresh: true
+    type: factual
+    question: "Which embedding model does the ACME Search Service run?"
+    match: any
+    expected_sources:
+      - acme_search_service.md
+    should_abstain: false
+    expected_answer: "The ACME Search Service runs the acme-embed-v2 embedding model."
+    notes: "STALENESS TEST: identical question to s01, but the source now says v2. Correct = acme-embed-v2. Serving the cached acme-embed-v1 is the stale-recall failure (expected under slice-1; fixed by forget/refresh)."
+
+  - id: s05
+    session: 2
+    role: repeat
+    relates_to: s02
+    expect_recall: false
+    expect_fresh: true
+    type: factual
+    question: "How many results does the ACME Search Service return by default?"
+    match: any
+    expected_sources:
+      - acme_search_service.md
+    should_abstain: false
+    expected_answer: "By default the ACME Search Service returns the top 15 results for each query."
+    notes: "STALENESS TEST: source now says 15. Serving the cached 8 is the stale-recall failure."
+
+  - id: s06
+    session: 2
+    role: repeat
+    relates_to: s03
+    expect_recall: true
+    expect_fresh: false
+    type: factual
+    question: "Why does the retrieval pipeline rescale each embedding vector to length 1 before writing it into the index?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b — and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics ride on L2-optimized index machinery."
+    notes: "CONTROL: paraphrase of s03 on an UNCHANGED doc. Recall SHOULD fire (cost win is safe here). The contrast with s04/s05 is the lesson: invalidate the stale, keep the safe."

@@ -84,6 +84,16 @@ context:
   #  regressed completeness + faithfulness despite dropping no facts. The function is kept in the
   #  context/ package for reference; no config knob. See DD-044 / EXPERIMENTS v2-14.)
 
+memory:
+  # Module 4: episodic "soft cache" (DD-045). Each answered question is persisted as an
+  # episode; at task start the top recalled episode(s) are injected into the controller
+  # context as a labeled HINT. Recall is THRESHOLD-FREE: similarity only RANKS which past
+  # episodes to surface — the AGENT decides whether to reuse them (the LLM judges relevance
+  # far better than a brittle cosine cutoff; consistent with how retrieved chunks are handled).
+  enabled: false # default OFF = champion (the answer path is unchanged); the eval flips this ON
+  recall_k: 1 # how many past episodes to surface to the controller
+  path: ./chromadb_data/episodic_memory.json # SEPARATE from the corpus vector store
+
 corpus:
   root: ./corpus # seed corpus until the user's own docs exist
 

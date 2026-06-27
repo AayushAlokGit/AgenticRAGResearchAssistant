@@ -1,0 +1,89 @@
+# Memory eval — SESSION 4: knowledge accumulation / temporal multi-hop (capability E)
+#
+# WHAT THIS TESTS (docs/memory/MEMORY_CAPABILITIES.md, capability E): can the system reuse
+# an EARLIER-ESTABLISHED conclusion as a building block, so a later question needs FEWER
+# hops — i.e. does it get smarter over a session? The failure mode is that every question
+# restarts from raw corpus (no compounding); the agent is no faster on question 4 than on
+# question 1.
+#
+# THE SHAPE: a DEPENDENT CHAIN. Each question's answer is a building block for the next
+# (the `builds_on` field records the dependency). Run IN ORDER, store persisting. With
+# memory, the later questions (k03, k04) should reuse the facts established by k01/k02 and
+# resolve in fewer search rounds; without memory each re-retrieves from scratch.
+#
+# SCORING: the headline is OPERATIONAL — round/token reduction on the DEPENDENT questions
+# (k03, k04) ON vs OFF, at held-equal correctness.
+#
+# *** HEADROOM (read this) ***  This session is EXPECTED to stay FLAT under slice-1 (the
+# episodic soft cache). Slice-1 recall fires on whole-question SIMILARITY: k03 is a NEW
+# question that USES k01/k02's answers, not a paraphrase of them, so it won't trigger an
+# episodic recall. Reusing established FACTS (not whole episodes) needs SEMANTIC memory /
+# consolidation — arc step 3. So this set pre-stages the consolidation eval: a deliberate,
+# documented gap (cf. agentic.yaml's v2 headroom cases), not a regression. It should light
+# up only once consolidation is built. Until then, treat a null result as the expected
+# baseline, not a failure.
+#
+# Extra fields: role (all `chain`), builds_on (ids whose answers this depends on),
+# expect_recall (true = a fact-level recall SHOULD help once consolidation exists).
+# Worked instance: the documentation-retrieval MCP server's ChromaDB query path
+# (02-Architecture + LOCAL_EMBEDDING_SERVICE + VECTOR_DB_INTERNALS), a genuinely chained
+# embed→index→search story (= the causality behind agentic a16/a03).
+
+version: 1
+corpus: ./corpus
+
+questions:
+  - id: k01
+    role: chain
+    builds_on: []
+    expect_recall: false
+    type: factual
+    question: "In the ChromaDB / local-embeddings variant of the documentation-retrieval MCP server, which embedding model is used and what is its output vector dimensionality?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "It uses the local Sentence-Transformers all-MiniLM-L6-v2 model, which produces 384-dimensional vectors."
+    notes: "Establishes fact 1 (model + dimensionality). Cold start of the chain."
+
+  - id: k02
+    role: chain
+    builds_on: [k01]
+    expect_recall: true
+    type: factual
+    question: "When that local embedding service turns a piece of text into its vector, what pooling and normalization does it apply to produce the final vector?"
+    match: all
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+    should_abstain: false
+    expected_answer: "It runs the model forward pass, then applies MEAN POOLING over the token embeddings (masked token states summed and divided by the attention-mask count) and finally L2 NORMALIZATION (F.normalize, p=2) to produce a unit-length vector."
+    notes: "Establishes fact 2 (pooling + L2 normalization). Depends on k01 ('that local embedding service' = the MiniLM service just established)."
+
+  - id: k03
+    role: chain
+    builds_on: [k01, k02]
+    expect_recall: true
+    type: multi_hop
+    question: "Once that unit-length vector reaches ChromaDB, what index type and similarity function find the nearest matches — and why does the L2 normalization from the previous step make cosine ranking ride cleanly on that index?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "ChromaDB indexes the vector with HNSW and searches by COSINE similarity. Because the vectors are L2-normalized to unit length (the previous step), cosine similarity collapses to a plain dot product and L2 distance and cosine give the same ranking — so cosine semantics ride cleanly on the L2/dot-optimized index machinery."
+    notes: "DEPENDENT: reuses k01 (which store) + k02 (the L2 normalization) to explain the index/similarity choice. ON (with fact-level recall) should need fewer searches because the normalization fact is already 'known'. Headroom under slice-1 (see header)."
+
+  - id: k04
+    role: chain
+    builds_on: [k01, k02, k03]
+    expect_recall: true
+    type: multi_hop
+    question: "Putting it together, give the complete query path for the ChromaDB variant: from a raw text query to the ranked nearest-neighbour results, naming the model, the vector dimensionality, the pooling/normalization, the index, and the similarity function."
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "Raw query text → all-MiniLM-L6-v2 forward pass → mean pooling over token embeddings → L2 normalization to a unit-length 384-dimensional vector → stored/queried in ChromaDB via an HNSW index → nearest neighbours ranked by cosine similarity (which, on unit vectors, is the dot product). The full embed→index→search path of the local variant."
+    notes: "SYNTHESIS capstone: reuses every prior fact. Benefits most from accumulated memory — ON should reconstruct it largely from recalled facts with minimal fresh retrieval. The clearest place the cost win (round reduction) would show, once consolidation exists."

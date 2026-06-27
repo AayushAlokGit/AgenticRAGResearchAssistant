@@ -1,0 +1,108 @@
+# Memory eval — SESSION 2: cross-session persistence
+#
+# WHAT THIS TESTS (docs/memory/MEMORY_CAPABILITIES.md, capability C): memory must OUTLIVE
+# the process — something learned in session 1 must be usable in session 2. This is the
+# DEFINITION of memory; the failure mode is "amnesia at restart" (state that lived only in
+# RAM / the context window looks like memory within a run but evaporates on reboot).
+#
+# THE MECHANISM (restart simulation): questions carry a `session: 1|2` group field. The
+# runner answers all session-1 questions, then SIMULATES A RESTART by re-instantiating the
+# EpisodicStore from disk (no in-RAM carry-over), then answers session-2 questions. Because
+# EVERY recall here happens in session 2 — AFTER the restart — any cost win at all proves
+# persistence (contrast session 1, where recall could ride in-run state).
+#
+# SCORING: same three meters (cost / outcome / precision), ON vs OFF. The headline is the
+# session-2 repeats (p04/p05): rounds+tokens DOWN at equal correctness, ACROSS the restart.
+# p06 checks precision also survives the restart; p07 checks no-harm.
+#
+# Extra fields: role, relates_to, expect_recall (as in memory_session.yaml) + `session`.
+
+version: 1
+corpus: ./corpus
+
+questions:
+  # ═══ SESSION 1 — seed the store, then the process "restarts" ═════════════════════════════════
+  - id: p01
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "In vector search, why are embeddings normalized to unit length before they're stored?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b. You pay the division once at embed time, and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics ride on L2-optimized index machinery."
+    notes: "Seed for the cross-restart repeat p04."
+
+  - id: p02
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "In the Azure Cognitive Search architecture of the documentation-retrieval MCP server, which vector store and embedding model does it use?"
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "The Azure variant uses Azure Cognitive Search as the vector store with Azure OpenAI text-embedding-ada-002 (1536-dimensional) embeddings."
+    notes: "Seed for BOTH the cross-restart repeat p05 and the cross-restart distractor p06."
+
+  # ── ⟦ SIMULATED RESTART ⟧ — runner reloads the EpisodicStore from disk; no RAM carry-over ──
+
+  # ═══ SESSION 2 — every recall here must come from the PERSISTED store ════════════════════════
+  - id: p04
+    session: 2
+    role: repeat
+    relates_to: p01
+    expect_recall: true
+    type: factual
+    question: "Why does the retrieval pipeline rescale each embedding vector to length 1 before writing it into the index?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b. You pay the division once at embed time, and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics ride on L2-optimized index machinery."
+    notes: "HEADLINE: paraphrase of p01, asked AFTER the restart. A cost win here proves the episode persisted to disk and was recalled in a fresh process."
+
+  - id: p05
+    session: 2
+    role: repeat
+    relates_to: p02
+    expect_recall: true
+    type: factual
+    question: "For the Azure-based variant of the MCP server's architecture, what search backend and embedding model are configured?"
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "The Azure variant uses Azure Cognitive Search as the vector store with Azure OpenAI text-embedding-ada-002 (1536-dimensional) embeddings."
+    notes: "Second cross-restart cost-win case (paraphrase of p02)."
+
+  - id: p06
+    session: 2
+    role: distractor
+    relates_to: p02
+    expect_recall: false
+    type: factual
+    question: "In the ChromaDB / local-embeddings architecture of the documentation-retrieval MCP server, which vector store and embedding model does it use?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "The local variant uses ChromaDB as the vector store with local Sentence-Transformers all-MiniLM-L6-v2 (384-dimensional) embeddings."
+    notes: "PRECISION-survives-restart: near-duplicate of p02 (Azure→ChromaDB). The persisted p02 (Azure) episode must NOT be cross-recalled. Answer is ChromaDB/MiniLM."
+
+  - id: p07
+    session: 2
+    role: novel
+    expect_recall: false
+    type: factual
+    question: "In the claims extraction pipeline, why are reserve-change dollar amounts pulled out with deterministic rules and never sent through the LLM?"
+    match: any
+    expected_sources:
+      - extractor.md
+      - DESIGN.md
+    should_abstain: false
+    expected_answer: "Because reserve amounts are exact, templated financial data where reproducibility is non-negotiable: a rule regex captures 'Changed to $321,014.00' precisely, whereas an LLM could silently round it. Rules where the text is templated and correctness is exact; the LLM only where the fact needs reading comprehension. A rule's failure mode is a recoverable 'no match'; an LLM's is a wrong number."
+    notes: "No-harm: unrelated to any seed; ON must not spuriously recall a persisted episode (= agentic a15)."

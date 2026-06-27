@@ -69,6 +69,10 @@ OSCILLATION_PATIENCE = 2
 # query-matching span, not the prefix). Deferred — no measured failure traces to this yet.
 CONTROLLER_SNIPPET_CHARS = 300
 
+# Chars of a recalled past ANSWER previewed to the controller as a memory hint.
+MEMORY_ANSWER_CHARS = 600
+
+
 def _extract_json_value(raw: str):
     """Pull the first complete JSON object OR array out of the controller's reply.
 
@@ -175,7 +179,7 @@ class ControllerTurn:
 
 def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry, question: str,
                        scratchpad: List[Hit], steps: List[AgentStep],
-                       rounds_left: int) -> ControllerTurn:
+                       rounds_left: int, recalled: Optional[List] = None) -> ControllerTurn:
     """Ask the model for the next action(s); re-ask if it returns no parseable+valid tool call.
 
     The reply may be a single action OR a JSON array of independent actions to run together this
@@ -183,7 +187,7 @@ def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry
     its args satisfy that tool's schema. If every attempt yields nothing valid, return a FINISH
     turn — better to answer from what we have than crash or spin on a broken controller.
     """
-    user_message = build_controller_prompt(question, scratchpad, steps, rounds_left)
+    user_message = build_controller_prompt(question, scratchpad, steps, rounds_left, recalled)
     messages = [
         {"role": "system", "content": react_prompt},
         {"role": "user", "content": user_message},
@@ -214,20 +218,46 @@ def decide_next_action(controller_llm, react_prompt: str, registry: ToolRegistry
 
 
 def build_controller_prompt(question: str, scratchpad: List[Hit],
-                            steps: List[AgentStep], rounds_left: int) -> str:
+                            steps: List[AgentStep], rounds_left: int,
+                            recalled: Optional[List] = None) -> str:
     """The dynamic state shown to the controller each turn: question, history, evidence, budget.
 
     The available TOOLS are NOT here — they're injected once into the system prompt (a fixed
     instruction), while this user message carries only what changes round to round.
+
+    `recalled` (optional list of (episode, similarity)) is surfaced as a labeled hint.
     """
+    memory_block = ""
+    if recalled:
+        memory_block = f"{render_recalled(recalled)}\n\n"
     return (
         f"QUESTION:\n{question}\n\n"
+        f"{memory_block}"
         f"ACTIONS TAKEN SO FAR (and what each returned):\n{format_history(steps)}\n\n"
         f"EVIDENCE GATHERED SO FAR (source + snippet of each chunk):\n{router_view(scratchpad)}\n\n"
         f"Rounds remaining: {rounds_left}. Output ONE action as a JSON object, or — if the question "
         f"has INDEPENDENT parts you can pursue at once — a JSON ARRAY of actions to run together "
         f"this round. Use a single action when the next step depends on this one's results."
     )
+
+
+def render_recalled(recalled: List) -> str:
+    """Render recalled past episodes as a clearly-labeled, non-authoritative hint.
+
+    The label tells the controller to use a prior only if it genuinely answers THIS question,
+    so a near-duplicate-but-different prior is rejected by the model rather than a cutoff (DD-045).
+    """
+    lines = [
+        "POSSIBLY-RELEVANT PAST ANSWERS (recalled from earlier questions in this session; they "
+        "MAY OR MAY NOT apply to the current question). Use one ONLY if it genuinely answers THIS "
+        "question — then you may finish directly; otherwise IGNORE it and gather evidence as usual:"
+    ]
+    for episode, _similarity in recalled:
+        past_question = episode.get("question", "")
+        past_answer = " ".join(episode.get("answer", "").split())[:MEMORY_ANSWER_CHARS]
+        lines.append(f'- Earlier question: "{past_question}"')
+        lines.append(f"  Answer given: {past_answer}")
+    return "\n".join(lines)
 
 
 def format_history(steps: List[AgentStep]) -> str:
@@ -324,13 +354,18 @@ def _decision_from_obj(data, registry: ToolRegistry) -> Optional[Decision]:
 def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: str,
               top_k: int, max_rounds: int, answer_char_budget: int,
               registry: ToolRegistry, store, controller_llm=None,
-              ordering: str = "arrival") -> AnswerResult:
+              ordering: str = "arrival", memory_store=None, recall_k: int = 1) -> AnswerResult:
     """Run the retrieve -> reason -> act loop, then answer from the gathered evidence.
 
     `llm` writes the final answer (the generator); `controller_llm` makes the routing
     decisions (which tool, with what args). They may be DIFFERENT models — we tier compute by
     task difficulty (DD-025); defaults to the same model for both (the champion) when not split.
     `registry` is the action space; `store` backs the tools that read the corpus directly.
+
+    `memory_store` (optional EpisodicStore, DD-045) turns on episodic memory: recalled episodes
+    are surfaced to the controller as a hint (read at task start), and the answered question is
+    recorded (write at task end). When None, the answer path is the unchanged champion. Note
+    `store` (corpus) and `memory_store` (past answers) are deliberately separate.
     """
     if controller_llm is None:
         controller_llm = llm
@@ -338,6 +373,15 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     # string replace, not .format(), so literal JSON braces elsewhere in the prompt are safe.
     react_prompt = react_prompt.replace("{tools}", registry.render_for_prompt())
     ctx = ToolContext(retriever=retriever, store=store, top_k=top_k)
+
+    # READ episodic memory once (the question doesn't change across rounds); surfaced to the
+    # controller each round as a labeled hint.
+    recalled = None
+    if memory_store is not None:
+        recalled = memory_store.read(question, k=recall_k)
+        if recalled:
+            logger.info("agent: memory recalled %d past episode(s) (top sim=%.3f) — surfaced as a hint",
+                        len(recalled), recalled[0][1])
 
     logger.info("agent: START | budget<=%d round(s), tools=%s, top_k=%d, answer<=%d chars | Q: %s",
                 max_rounds, registry.names(), top_k, answer_char_budget, question)
@@ -358,7 +402,7 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
                     round_index + 1, max_rounds, len(scratchpad))
 
         turn = decide_next_action(controller_llm, react_prompt, registry, question,
-                                  scratchpad.hits, steps, rounds_left)
+                                  scratchpad.hits, steps, rounds_left, recalled)
         controller_usage = controller_usage + turn.usage
         tool_errors += turn.failed_attempts
         rounds_used += 1
@@ -455,6 +499,16 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     preview = result.answer.strip().replace("\n", " ")[:100]
     logger.info("agent: answer ready — %d char(s) from %d chunk(s), %d LLM call(s)/%d tokens: %s",
                 len(result.answer), len(result.retrieved), total_calls, total_tokens, preview)
+
+    # WRITE the answered question to episodic memory; meta keeps sources + trajectory for diagnosis.
+    if memory_store is not None:
+        sources = sorted({hit.source for hit in result.retrieved})
+        meta = {"sources": sources}
+        if result.trajectory is not None:
+            meta["rounds_used"] = result.trajectory.rounds_used
+            meta["exit_reason"] = result.trajectory.exit_reason
+        memory_store.write(question, result.answer, meta=meta)
+
     return result
 
 
@@ -605,11 +659,16 @@ def main() -> None:
     parser.add_argument("--max-rounds", type=int, default=None, help="Override agent.max_rounds.")
     parser.add_argument("--tools", default=None,
                         help="Comma-separated tool set to use (e.g. search,expand_document,list_sources,finish).")
+    parser.add_argument("--memory", action="store_true",
+                        help="Force episodic memory ON for this run (overrides config.memory.enabled). "
+                             "Recall+write use the persistent store at config.memory.path.")
     args = parser.parse_args()
 
-    from agentic_rag.config import load_config
+    from agentic_rag.config import load_config, resolve_path
     from agentic_rag.llm.provider import build_llm
     from agentic_rag.logging_setup import configure_run_logging
+    from agentic_rag.memory.episodic import EpisodicStore
+    from agentic_rag.rag.embeddings import LocalEmbedder
     from agentic_rag.rag.retriever import build_retriever
 
     configure_run_logging("agent/loop")
@@ -627,10 +686,19 @@ def main() -> None:
     registry, store = build_agent_deps(config, tool_names)
     ordering = config.get("context", {}).get("ordering", "arrival")
 
+    memory_cfg = config.get("memory", {})
+    memory_store = None
+    recall_k = memory_cfg.get("recall_k", 1)
+    if args.memory or memory_cfg.get("enabled", False):
+        embedder = LocalEmbedder(config["embedding"]["model"])
+        memory_store = EpisodicStore(resolve_path(memory_cfg["path"]), embedder)
+        logger.info("agent: episodic memory ON (%d episode(s) in store at %s)",
+                    len(memory_store), memory_cfg["path"])
+
     question = " ".join(args.question)
     result = run_agent(question, retriever, llm, react_prompt, answer_prompt, top_k, max_rounds,
                        answer_char_budget, registry, store, controller_llm=controller_llm,
-                       ordering=ordering)
+                       ordering=ordering, memory_store=memory_store, recall_k=recall_k)
 
     print(f"\nQ: {result.question}\n")
     print(f"A: {result.answer}\n")

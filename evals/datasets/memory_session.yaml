@@ -1,0 +1,183 @@
+# Memory eval — sequenced SESSION (Module 4, slice 1: episodic soft cache)
+#
+# WHY THIS FILE EXISTS / how it differs from seed.yaml + agentic.yaml:
+# Those are INDEPENDENT one-shot questions — by construction they cannot measure memory
+# (each starts blank; there is no past to recall). Memory only shows up ACROSS a sequence.
+# So this set is ONE ORDERED SESSION: questions run TOP-TO-BOTTOM with the episodic store
+# PERSISTING between them, and the harness runs the whole session TWICE — memory OFF
+# (baseline) vs ON — and diffs three axes (docs/memory/MEMORY_ENGINEERING.md P6):
+#   COST WIN   : rounds + tokens DOWN on repeats          (operational)
+#   OUTCOME    : correctness FLAT (memory must not degrade) (outcome)
+#   PRECISION  : ZERO false-recall on near-duplicates       (trajectory)
+#
+# ── Roles (the design IS the roles) ─────────────────────────────────────────────────────────
+#   seed       : answered cold; its job is to WRITE an episode. No recall expected.
+#   repeat     : a PARAPHRASE of a seed (different surface form, same intent). ON should RECALL
+#                the seed episode and finish in fewer rounds at the SAME answer. → the cost win.
+#   distractor : a NEAR-DUPLICATE of a seed (≈ one-token surface diff) with a DIFFERENT answer.
+#                ON must NOT cross-recall the seed's answer. → the precision test (P5).
+#   novel      : unrelated to any seed; no useful prior. ON must stay quiet. → no-harm.
+#
+# ── Extra fields beyond the agentic.yaml schema ─────────────────────────────────────────────
+#   role          : seed | repeat | distractor | novel
+#   relates_to    : (repeat/distractor) the seed id this pairs with
+#   expect_recall : true  -> a correct recall SHOULD fire and help (repeats)
+#                   false -> recall must NOT change the answer (seeds, distractors, novel)
+# Outcome fields (question, match, expected_sources, should_abstain, expected_answer, notes)
+# are scored exactly as in agentic.yaml (same judge), so the cost-win/outcome axes stay
+# comparable to the existing harness. No new corpus content — all golds come from the
+# existing 22-doc corpus; the distractor pairs exploit its PARALLEL docs (two architecture
+# variants; the normalizer/extractor/resolver pipeline stages).
+#
+# ── Session map (execution order) ───────────────────────────────────────────────────────────
+#   m01 seed (normalize-why) · m02 seed (Azure arch) · m03 seed (Normalizer role) · m04 seed (chunking-why)
+#   m05 novel (reserve rules) · m06 repeat→m01 · m07 distractor→m02 (ChromaDB) · m08 distractor→m03 (Resolver)
+#   m09 repeat→m04 · m10 repeat→m02 (Azure again, AFTER the ChromaDB episode exists — must recall the RIGHT one)
+#   m11 novel (NLE abstain)
+
+version: 1
+corpus: ./corpus
+
+questions:
+  # ═══ SEEDS — answered cold, populate the store ══════════════════════════════════════════════
+  - id: m01
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "In vector search, why are embeddings normalized to unit length before they're stored?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b. You pay the division once at embed time, making every later comparison a cheap dot product — and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics can ride on L2-optimized index machinery."
+    notes: "Seed for the m06 repeat (cost-win pair). Single self-contained fact (= agentic a01)."
+
+  - id: m02
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "In the Azure Cognitive Search architecture of the documentation-retrieval MCP server, which vector store and embedding model does it use?"
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "The Azure variant uses Azure Cognitive Search as the vector store with Azure OpenAI text-embedding-ada-002 (1536-dimensional) embeddings."
+    notes: "Seed for BOTH the m07 distractor (ChromaDB variant, different answer) and the m10 repeat (Azure again). Gold is the Azure half of agentic a24's verified conflict gold."
+
+  - id: m03
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "What is the role of the Normalizer stage in the claims-processing pipeline?"
+    match: any
+    expected_sources:
+      - normalizer.md
+    should_abstain: false
+    expected_answer: "The Normalizer cleans and standardizes each note in a stateless, per-note pass: lossless character-level mojibake/encoding repair (e.g. 'â€\"' back to '—'), whitespace and CRLF→\\n line-ending fixes, and parsing the note's HEADER date into a typed ISO field — while deliberately leaving BODY dates as raw text (so the LLM extractor's evidence_quote stays a verbatim substring and ambiguous in-body dates aren't corrupted). It does NOT do cross-note work like identity canonicalization (that is the Resolver's job)."
+    notes: "Seed for the m08 distractor (Resolver role, different answer). Gold drawn from normalizer.md (= agentic a10/a17 facts)."
+
+  - id: m04
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "What are the forcing functions that make chunking necessary in the first place?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Four hard constraints: (1) the embedder's input limit (models truncate beyond ~256–512 tokens); (2) retrieval precision (a single vector for a whole document averages away specifics); (3) the generation budget (you can't stuff whole documents into the prompt); and (4) signal-to-noise (a focused chunk gives the generator the relevant passage without distractor text)."
+    notes: "Seed for the m09 repeat (cost-win pair). Enumerated fact in one section (= agentic a02)."
+
+  # ═══ NOVEL — no useful prior; ON must stay quiet (no-harm axis) ══════════════════════════════
+  - id: m05
+    role: novel
+    expect_recall: false
+    type: factual
+    question: "In the claims extraction pipeline, why are reserve-change dollar amounts pulled out with deterministic rules and never sent through the LLM?"
+    match: any
+    expected_sources:
+      - extractor.md
+      - DESIGN.md
+    should_abstain: false
+    expected_answer: "Because reserve amounts are exact, templated financial data where reproducibility is non-negotiable: a rule regex captures 'Changed to $321,014.00' precisely, whereas an LLM could silently round it. Rules where the text is templated and correctness is exact (money, structured-header dates); the LLM only where the fact needs reading comprehension. A rule's failure mode is a recoverable 'no match'; an LLM's failure on exact financial data is a wrong number."
+    notes: "Novel #1 — unrelated to any seed (= agentic a15). Tests that ON does not spuriously recall a seed episode for a genuinely new question."
+
+  # ═══ REPEAT — paraphrase of a seed; ON should recall → fewer rounds (cost-win axis) ══════════
+  - id: m06
+    role: repeat
+    relates_to: m01
+    expect_recall: true
+    type: factual
+    question: "Why does the retrieval pipeline rescale each embedding vector to length 1 before writing it into the index?"
+    match: any
+    expected_sources:
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "So cosine similarity collapses to a plain dot product: once every vector has length 1, cos(a,b) = a·b. You pay the division once at embed time, making every later comparison a cheap dot product — and on unit vectors L2 distance and cosine give the same ranking, so cosine semantics can ride on L2-optimized index machinery."
+    notes: "Paraphrase of m01 (same intent, different wording → tests SEMANTIC recall, not lexical). Cost-win: ON should recall m01 and finish in fewer rounds at equal correctness."
+
+  # ═══ DISTRACTORS — near-duplicate of a seed, DIFFERENT answer; ON must NOT cross-recall ══════
+  - id: m07
+    role: distractor
+    relates_to: m02
+    expect_recall: false
+    type: factual
+    question: "In the ChromaDB / local-embeddings architecture of the documentation-retrieval MCP server, which vector store and embedding model does it use?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "The local variant uses ChromaDB as the vector store with local Sentence-Transformers all-MiniLM-L6-v2 (384-dimensional) embeddings."
+    notes: "PRECISION test — near-identical surface to m02 (only 'Azure Cognitive Search' → 'ChromaDB / local-embeddings'), so the two question embeddings nearly collide. A naive threshold cache would recall m02's AZURE answer; the correct answer is ChromaDB/MiniLM. False-recall here = the failure mode the whole precision axis exists to catch."
+
+  - id: m08
+    role: distractor
+    relates_to: m03
+    expect_recall: false
+    type: factual
+    question: "What is the role of the Resolver stage in the claims-processing pipeline?"
+    match: any
+    expected_sources:
+      - resolver.md
+    should_abstain: false
+    expected_answer: "The Resolver is the CROSS-NOTE stage: it deduplicates and merges the per-note candidate events the Extractor emits into single events, using deterministic match keys (for appointments: claim_id + exact encounter_date + parties_overlap ≥ 1, after normalizing party identities — strip honorifics/suffixes, &→and, lowercase). It canonicalizes a provider's many surface forms into one identity (which the stateless per-note Normalizer structurally cannot), and resolves merged-event status by asymmetric precedence."
+    notes: "PRECISION test — one-word surface diff from m03 ('Normalizer' → 'Resolver'), different answer. Must not cross-recall m03's Normalizer answer."
+
+  # ═══ REPEATS (continued) — cost-win, including the 'recall the RIGHT one' case ═══════════════
+  - id: m09
+    role: repeat
+    relates_to: m04
+    expect_recall: true
+    type: factual
+    question: "Which hard constraints are what force documents to be broken into chunks at all?"
+    match: any
+    expected_sources:
+      - CHUNKING.md
+    should_abstain: false
+    expected_answer: "Four hard constraints: (1) the embedder's input limit (models truncate beyond ~256–512 tokens); (2) retrieval precision (a single vector for a whole document averages away specifics); (3) the generation budget (you can't stuff whole documents into the prompt); and (4) signal-to-noise (a focused chunk gives the generator the relevant passage without distractor text)."
+    notes: "Paraphrase of m04. Cost-win pair."
+
+  - id: m10
+    role: repeat
+    relates_to: m02
+    expect_recall: true
+    type: factual
+    question: "For the Azure-based variant of the MCP server's architecture, what search backend and embedding model are configured?"
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "The Azure variant uses Azure Cognitive Search as the vector store with Azure OpenAI text-embedding-ada-002 (1536-dimensional) embeddings."
+    notes: "Paraphrase of m02 (Azure) — but it runs AFTER the m07 ChromaDB episode is in the store. So the store now holds BOTH an Azure (m02) and a ChromaDB (m07) episode for near-identical questions: this tests that recall returns the RIGHT episode (Azure), not merely the most-recent or most-similar-by-surface. Recall + precision combined."
+
+  # ═══ NOVEL (continued) — abstention under memory; ON must not fabricate a recall ═════════════
+  - id: m11
+    role: novel
+    expect_recall: false
+    type: abstention
+    question: "On a claim's financial reserves, what does the NLE field stand for?"
+    match: any
+    expected_sources: []
+    should_abstain: true
+    expected_answer: "Not enough information. The claims-file inventory lists NLE as a field that appears with a value (e.g. 34.92) but explicitly marks its meaning as 'to confirm' — the documentation never defines what NLE stands for."
+    notes: "Novel #2 + abstention (= agentic a13). Double duty: ON must (a) not recall a seed episode for an unrelated question, and (b) not let a spurious recall turn a correct 'Not enough information.' into a fabricated definition."
