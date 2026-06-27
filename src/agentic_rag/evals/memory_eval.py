@@ -40,6 +40,7 @@ from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.memory.episodic import EpisodicStore
 from agentic_rag.rag.answer import load_prompt
 from agentic_rag.rag.embeddings import LocalEmbedder
+from agentic_rag.rag.ingest import ingest
 from agentic_rag.rag.retriever import build_retriever
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ SESSIONS = {
     "recall": "evals/datasets/memory_session.yaml",                 # capability A + B
     "persistence": "evals/datasets/memory_session_persistence.yaml",  # capability C (restart)
     "accumulation": "evals/datasets/memory_session_accumulation.yaml",  # capability E (headroom)
-    # "staleness" deliberately omitted here — needs the corpus-swap hook (capability D).
+    "staleness": "evals/datasets/memory_session_staleness.yaml",     # capability D (corpus swap → forget)
 }
 
 
@@ -66,6 +67,7 @@ class MemoryQuestion:
     type: str = ""
     relates_to: Optional[str] = None
     expect_recall: Optional[bool] = None
+    expect_fresh: Optional[bool] = None   # staleness: answer MUST reflect the current source, not a cached one
     session: int = 1               # restart-group (persistence); 1 if absent
     notes: str = ""
 
@@ -85,6 +87,7 @@ def load_session(path: str) -> List[MemoryQuestion]:
             type=q.get("type", ""),
             relates_to=q.get("relates_to"),
             expect_recall=q.get("expect_recall"),
+            expect_fresh=q.get("expect_fresh"),
             session=int(q.get("session", 1)),
             notes=q.get("notes", ""),
         ))
@@ -107,6 +110,7 @@ class QResult:
     tokens: int                    # controller + generator (the cost of answering this question)
     recall_sim: Optional[float] = None      # top recalled similarity (ON only) — diagnostic
     recall_of: Optional[str] = None         # preview of the recalled past question (ON only)
+    expect_fresh: Optional[bool] = None     # staleness: answer must reflect the CURRENT source
     judge_reason: str = ""
     retrieved: List[dict] = field(default_factory=list)   # the chunks the agent gathered (for debugging)
 
@@ -138,65 +142,90 @@ class Deps:
     recall_k: int
     memory_path: object
     embedder: object
+    config: dict        # kept so a pass can rebuild the retriever after a staleness corpus swap
 
 
-def run_pass(questions: List[MemoryQuestion], deps: Deps, memory_on: bool) -> List[QResult]:
+def run_pass(questions: List[MemoryQuestion], deps: Deps, memory_on: bool,
+             staleness: bool = False) -> List[QResult]:
     """Run the whole session in order, once, with memory ON or OFF.
 
     ON: a single EpisodicStore persists across the session (cleared to empty at the start);
     a change in the `session` field triggers a simulated RESTART (reload from disk). OFF:
     no store at all (the unchanged champion answer path).
+
+    `staleness` (capability D): mutate the CORPUS across the session boundary — stage the v1
+    fixture before session 1, swap to v2 at the boundary, remove it in `finally`. The corpus
+    changes in BOTH passes (the world changed regardless of memory), so this is independent of
+    `memory_on`. After each mutation the retriever is rebuilt (BM25 reindex). The point of the
+    test: in session 2 a stale ON answer (cached v1) loses to the fresh corpus (v2).
     """
     memory_store = None
     if memory_on:
         memory_store = EpisodicStore(deps.memory_path, deps.embedder)
         memory_store.clear()   # every ON pass starts from an empty store
 
+    corpus_dir = resolve_path(deps.config["corpus"]["root"]) if staleness else None
+    if staleness:
+        stage_fixture(1, corpus_dir)               # session-1 corpus = v1
+        deps.retriever = build_retriever(deps.config)
+
     results: List[QResult] = []
     current_session = None
-    for q in questions:
-        # Simulated restart at a session boundary: drop RAM, reload from disk.
-        if memory_on and current_session is not None and q.session != current_session:
-            logger.info("memory-eval: --- SIMULATED RESTART (session %s -> %s): reloading store from disk ---",
-                        current_session, q.session)
-            memory_store.reload()
-        current_session = q.session
+    try:
+        for q in questions:
+            boundary = current_session is not None and q.session != current_session
+            # Simulated restart at a session boundary: drop RAM, reload from disk (memory only).
+            if boundary and memory_on:
+                logger.info("memory-eval: --- SIMULATED RESTART (session %s -> %s): reloading store from disk ---",
+                            current_session, q.session)
+                memory_store.reload()
+            # Corpus change at the boundary (staleness): v1 -> v2, then rebuild the retriever.
+            if boundary and staleness:
+                logger.info("memory-eval: --- CORPUS CHANGE (session %s -> %s): swapping fixture v1 -> v2 ---",
+                            current_session, q.session)
+                stage_fixture(2, corpus_dir)
+                deps.retriever = build_retriever(deps.config)
+            current_session = q.session
 
-        # Diagnostic ONLY: what would be recalled (sim + which past question). Does not gate anything.
-        recall_sim = None
-        recall_of = None
-        if memory_on:
-            top = memory_store.read(q.question, k=1)
-            if top:
-                episode, sim = top[0]
-                recall_sim = round(sim, 3)
-                recall_of = episode.get("question", "")[:60]
+            # Diagnostic ONLY: what would be recalled (sim + which past question). Does not gate anything.
+            recall_sim = None
+            recall_of = None
+            if memory_on:
+                top = memory_store.read(q.question, k=1)
+                if top:
+                    episode, sim = top[0]
+                    recall_sim = round(sim, 3)
+                    recall_of = episode.get("question", "")[:60]
 
-        generated = run_agent(
-            q.question, deps.retriever, deps.generator_llm, deps.react_prompt, deps.answer_prompt,
-            deps.top_k, deps.max_rounds, deps.answer_char_budget, deps.registry, deps.store,
-            controller_llm=deps.controller_llm, ordering=deps.ordering,
-            memory_store=memory_store, recall_k=deps.recall_k)
+            generated = run_agent(
+                q.question, deps.retriever, deps.generator_llm, deps.react_prompt, deps.answer_prompt,
+                deps.top_k, deps.max_rounds, deps.answer_char_budget, deps.registry, deps.store,
+                controller_llm=deps.controller_llm, ordering=deps.ordering,
+                memory_store=memory_store, recall_k=deps.recall_k)
 
-        abstained = is_abstention(generated.answer)
-        verdict = None
-        reason = ""
-        if not q.should_abstain and not abstained:
-            verdict, reason, _ = judge_correctness(
-                deps.judge_llm, deps.judge_prompt, q.question, q.expected_answer, generated.answer)
-        outcome_ok = abstained if q.should_abstain else (verdict == "CORRECT")
+            abstained = is_abstention(generated.answer)
+            verdict = None
+            reason = ""
+            if not q.should_abstain and not abstained:
+                verdict, reason, _ = judge_correctness(
+                    deps.judge_llm, deps.judge_prompt, q.question, q.expected_answer, generated.answer)
+            outcome_ok = abstained if q.should_abstain else (verdict == "CORRECT")
 
-        rounds = generated.trajectory.rounds_used if generated.trajectory else 0
-        tokens = generated.controller_usage.total_tokens + generated.generator_usage.total_tokens
-        results.append(QResult(
-            id=q.id, role=q.role, question=q.question, memory_on=memory_on, answer=generated.answer,
-            abstained=abstained, verdict=verdict, outcome_ok=outcome_ok, rounds=rounds, tokens=tokens,
-            recall_sim=recall_sim, recall_of=recall_of, judge_reason=reason,
-            retrieved=serialize_hits(generated.retrieved)))
-        tag = "ABSTAIN" if abstained else (verdict or "-")
-        recall_tag = f" recall~{recall_sim}" if recall_sim is not None else ""
-        logger.info("  [%s] %-10s mem=%s  %-9s rounds=%d tokens=%d%s",
-                    q.id, q.role, "ON " if memory_on else "OFF", tag, rounds, tokens, recall_tag)
+            rounds = generated.trajectory.rounds_used if generated.trajectory else 0
+            tokens = generated.controller_usage.total_tokens + generated.generator_usage.total_tokens
+            results.append(QResult(
+                id=q.id, role=q.role, question=q.question, memory_on=memory_on, answer=generated.answer,
+                abstained=abstained, verdict=verdict, outcome_ok=outcome_ok, rounds=rounds, tokens=tokens,
+                recall_sim=recall_sim, recall_of=recall_of, expect_fresh=q.expect_fresh, judge_reason=reason,
+                retrieved=serialize_hits(generated.retrieved)))
+            tag = "ABSTAIN" if abstained else (verdict or "-")
+            recall_tag = f" recall~{recall_sim}" if recall_sim is not None else ""
+            logger.info("  [%s] %-10s mem=%s  %-9s rounds=%d tokens=%d%s",
+                        q.id, q.role, "ON " if memory_on else "OFF", tag, rounds, tokens, recall_tag)
+    finally:
+        if staleness:
+            cleanup_fixture(corpus_dir)            # restore the corpus to baseline even on error
+            deps.retriever = build_retriever(deps.config)
     return results
 
 
@@ -261,6 +290,27 @@ def report(off: List[QResult], on: List[QResult]) -> dict:
     else:
         logger.info("  no correctness regressions")
 
+    # ---- FRESHNESS (staleness session only): changed-fact repeats must serve the NEW source ON ----
+    # Under slice 1 (a write/read cache with NO freshness check) these are EXPECTED to fail — the
+    # cached v1 answer wins over the changed v2 corpus. That failure is the point: it motivates forget.
+    fresh_tests = [rid for rid in ids if on_by_id[rid].expect_fresh]
+    stale_served = []
+    if fresh_tests:
+        logger.info("\n=== FRESHNESS (staleness: changed-fact repeats must serve the NEW source ON, not a cached answer) ===")
+        for rid in fresh_tests:
+            o, n = off_by_id[rid], on_by_id[rid]
+            served_stale = o.outcome_ok and not n.outcome_ok   # fresh OFF, wrong ON = the cached stale answer won
+            if served_stale:
+                stale_served.append(rid)
+            label = "<-- STALE-SERVED" if served_stale else ("fresh" if n.outcome_ok else "wrong (both passes)")
+            logger.info("  %s  fresh-corpus OFF %s -> ON %s  recall~%s  %s",
+                        rid, _ok(o.outcome_ok), _ok(n.outcome_ok), n.recall_sim, label)
+        controls = [rid for rid in ids if on_by_id[rid].expect_fresh is False and role_of(rid) == "repeat"]
+        for rid in controls:
+            n = on_by_id[rid]
+            logger.info("  [control] %s  ON %s  recall~%s  (UNCHANGED doc — safe recall should still hold)",
+                        rid, _ok(n.outcome_ok), n.recall_sim)
+
     return {
         "n_questions": len(ids),
         "cost_win": {
@@ -278,11 +328,44 @@ def report(off: List[QResult], on: List[QResult]) -> dict:
             "off_correct": off_correct, "on_correct": on_correct,
             "total": len(ids), "regressions": regressions,
         },
+        "freshness": {
+            "fresh_tests": fresh_tests,
+            "stale_served": stale_served,   # expected NON-empty under slice 1 (no forgetting yet)
+        },
     }
 
 
 def _ok(flag: bool) -> str:
     return "OK" if flag else "X"
+
+
+# ───────────────────────────── staleness corpus swap (capability D) ─────────────────────────────
+# The staleness session mutates the corpus mid-run: a fictional fixture doc is added (v1), swapped
+# to a CHANGED version (v2) at the session boundary, then removed. It's copied to a STABLE filename
+# so the content-hash tracker sees a *changed* file on swap (not a new one) and re-embeds it. After
+# every mutation the caller must rebuild the retriever — the BM25 index is built once at construction
+# and would otherwise keep serving the old text.
+
+STALENESS_FIXTURE_DIR = "evals/fixtures/staleness"
+STALENESS_STABLE_NAME = "acme_search_service.md"   # the name the corpus + the eval's expected_sources use
+
+
+def stage_fixture(version: int, corpus_dir) -> None:
+    """Copy fixture v{version} to the stable corpus filename and re-ingest (add or change)."""
+    src = resolve_path(f"{STALENESS_FIXTURE_DIR}/acme_search_service.v{version}.md")
+    dst = corpus_dir / STALENESS_STABLE_NAME
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    logger.info("staleness: staged fixture v%d -> %s", version, dst.name)
+    ingest()
+
+
+def cleanup_fixture(corpus_dir) -> None:
+    """Remove the fixture from the corpus and re-ingest (purges its chunks → corpus back to baseline)."""
+    dst = corpus_dir / STALENESS_STABLE_NAME
+    if dst.exists():
+        dst.unlink()
+        logger.info("staleness: removed fixture %s", dst.name)
+    ingest()
 
 
 # ───────────────────────────── orchestration ─────────────────────────────
@@ -307,24 +390,25 @@ def build_deps(config: dict) -> Deps:
         recall_k=memory_cfg.get("recall_k", 1),
         memory_path=resolve_path(memory_cfg.get("path", "./chromadb_data/episodic_memory.json")),
         embedder=LocalEmbedder(config["embedding"]["model"]),
+        config=config,
     )
 
 
 def run_session(session: str, save: bool = True) -> dict:
     if session not in SESSIONS:
-        raise SystemExit(f"unknown session {session!r}. Available: {sorted(SESSIONS)} "
-                         f"(staleness needs the corpus-swap hook — not wired yet).")
+        raise SystemExit(f"unknown session {session!r}. Available: {sorted(SESSIONS)}.")
     config = load_config()
     if not bool(config.get("agent", {}).get("enabled", False)):
         raise SystemExit("agent.enabled is FALSE — the memory eval needs the agent loop ON.")
 
     questions = load_session(SESSIONS[session])
     deps = build_deps(config)
+    staleness = session == "staleness"   # this session mutates the corpus across the boundary
 
     logger.info("=== MEMORY EVAL: session=%s (%d questions) — OFF baseline pass ===", session, len(questions))
-    off = run_pass(questions, deps, memory_on=False)
+    off = run_pass(questions, deps, memory_on=False, staleness=staleness)
     logger.info("\n=== MEMORY EVAL: session=%s — ON pass ===", session)
-    on = run_pass(questions, deps, memory_on=True)
+    on = run_pass(questions, deps, memory_on=True, staleness=staleness)
 
     summary = report(off, on)
     if save:
@@ -340,9 +424,9 @@ def persist(session: str, summary: dict, off: List[QResult], on: List[QResult], 
 
     def rows(passi):
         return [{"id": r.id, "role": r.role, "question": r.question, "memory_on": r.memory_on,
-                 "verdict": r.verdict, "outcome_ok": r.outcome_ok, "rounds": r.rounds,
-                 "tokens": r.tokens, "recall_sim": r.recall_sim, "recall_of": r.recall_of,
-                 "answer": r.answer, "retrieved": r.retrieved}
+                 "verdict": r.verdict, "outcome_ok": r.outcome_ok, "expect_fresh": r.expect_fresh,
+                 "rounds": r.rounds, "tokens": r.tokens, "recall_sim": r.recall_sim,
+                 "recall_of": r.recall_of, "answer": r.answer, "retrieved": r.retrieved}
                 for r in passi]
 
     record = {
