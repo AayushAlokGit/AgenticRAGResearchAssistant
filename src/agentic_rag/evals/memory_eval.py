@@ -49,6 +49,7 @@ SESSIONS = {
     "recall": "evals/datasets/memory_session.yaml",                 # capability A + B
     "persistence": "evals/datasets/memory_session_persistence.yaml",  # capability C (restart)
     "accumulation": "evals/datasets/memory_session_accumulation.yaml",  # capability E (headroom)
+    "consolidation": "evals/datasets/memory_session_consolidation.yaml",  # capability E slice 2 (3-way)
     "staleness": "evals/datasets/memory_session_staleness.yaml",     # capability D (corpus swap → forget)
 }
 
@@ -133,6 +134,7 @@ class Deps:
     judge_prompt: str
     react_prompt: str
     answer_prompt: str
+    consolidate_prompt: str        # used only by the consolidation session (merge prompt)
     registry: object
     store: object
     top_k: int
@@ -146,12 +148,17 @@ class Deps:
 
 
 def run_pass(questions: List[MemoryQuestion], deps: Deps, memory_on: bool,
-             staleness: bool = False) -> List[QResult]:
+             staleness: bool = False, consolidate_at_boundary: bool = False) -> List[QResult]:
     """Run the whole session in order, once, with memory ON or OFF.
 
     ON: a single EpisodicStore persists across the session (cleared to empty at the start);
     a change in the `session` field triggers a simulated RESTART (reload from disk). OFF:
     no store at all (the unchanged champion answer path).
+
+    `consolidate_at_boundary` (capability E, consolidation slice): at the session boundary, merge
+    the session-1 episodes into synthesis records BEFORE the restart. This is the only difference
+    between the "episodic-ON" pass (False — plain recall) and the "consolidated-ON" pass (True),
+    so the episodic→consolidated diff isolates exactly what the MERGE adds over plain recall.
 
     `staleness` (capability D): mutate the CORPUS across the session boundary — stage the v1
     fixture before session 1, swap to v2 at the boundary, remove it in `finally`. The corpus
@@ -174,8 +181,14 @@ def run_pass(questions: List[MemoryQuestion], deps: Deps, memory_on: bool,
     try:
         for q in questions:
             boundary = current_session is not None and q.session != current_session
-            # Simulated restart at a session boundary: drop RAM, reload from disk (memory only).
+            # At a session boundary: optionally CONSOLIDATE the session-1 episodes, then drop RAM
+            # and reload from disk (memory only). Consolidate BEFORE reload so the synthesis is
+            # saved and comes back on the reload (and so it survives the simulated restart).
             if boundary and memory_on:
+                if consolidate_at_boundary:
+                    created = memory_store.consolidate(deps.generator_llm, deps.consolidate_prompt)
+                    logger.info("memory-eval: --- CONSOLIDATE (session %s -> %s): %d synthesis record(s) created ---",
+                                current_session, q.session, created)
                 logger.info("memory-eval: --- SIMULATED RESTART (session %s -> %s): reloading store from disk ---",
                             current_session, q.session)
                 memory_store.reload()
@@ -383,6 +396,7 @@ def build_deps(config: dict) -> Deps:
         judge_llm=judge_llm, judge_prompt=load_prompt(config, "judge_correctness"),
         react_prompt=load_prompt(config, "agent_react"),
         answer_prompt=load_prompt(config, "answer_with_citations"),
+        consolidate_prompt=load_prompt(config, "consolidate"),
         registry=registry, store=store, top_k=config["retrieval"]["top_k"],
         max_rounds=agent_cfg.get("max_rounds", 5),
         answer_char_budget=agent_cfg.get("answer_char_budget", 0),
@@ -403,8 +417,11 @@ def run_session(session: str, save: bool = True) -> dict:
 
     questions = load_session(SESSIONS[session])
     deps = build_deps(config)
-    staleness = session == "staleness"   # this session mutates the corpus across the boundary
 
+    if session == "consolidation":
+        return _run_consolidation_session(questions, deps, config, save)
+
+    staleness = session == "staleness"   # this session mutates the corpus across the boundary
     logger.info("=== MEMORY EVAL: session=%s (%d questions) — OFF baseline pass ===", session, len(questions))
     off = run_pass(questions, deps, memory_on=False, staleness=staleness)
     logger.info("\n=== MEMORY EVAL: session=%s — ON pass ===", session)
@@ -412,11 +429,38 @@ def run_session(session: str, save: bool = True) -> dict:
 
     summary = report(off, on)
     if save:
-        persist(session, summary, off, on, config)
+        persist(session, summary, {"off": off, "on": on}, config)
     return summary
 
 
-def persist(session: str, summary: dict, off: List[QResult], on: List[QResult], config: dict) -> None:
+def _run_consolidation_session(questions: List[MemoryQuestion], deps: Deps, config: dict, save: bool) -> dict:
+    """Capability E (consolidation): THREE passes so the win can be attributed.
+
+    OFF (no memory) / EPISODIC-ON (recall, no merge) / CONSOLIDATED-ON (merge at the boundary).
+    OFF→episodic shows what plain recall buys; EPISODIC→consolidated isolates what the MERGE adds
+    (on the broad questions, episodic recalls only one facet while consolidated recalls the whole).
+    """
+    n = len(questions)
+    logger.info("=== MEMORY EVAL: session=consolidation (%d questions) — pass 1/3: OFF (no memory) ===", n)
+    off = run_pass(questions, deps, memory_on=False)
+    logger.info("\n=== consolidation — pass 2/3: EPISODIC-ON (recall, NO consolidation) ===")
+    episodic = run_pass(questions, deps, memory_on=True, consolidate_at_boundary=False)
+    logger.info("\n=== consolidation — pass 3/3: CONSOLIDATED-ON (consolidate at the session boundary) ===")
+    consolidated = run_pass(questions, deps, memory_on=True, consolidate_at_boundary=True)
+
+    logger.info("\n######## DIFF A: OFF -> EPISODIC-ON (what plain recall adds) ########")
+    rep_off_episodic = report(off, episodic)
+    logger.info("\n######## DIFF B: EPISODIC-ON -> CONSOLIDATED-ON (what the MERGE adds — the headline) ########")
+    rep_episodic_consolidated = report(episodic, consolidated)
+
+    summary = {"off_vs_episodic": rep_off_episodic, "episodic_vs_consolidated": rep_episodic_consolidated}
+    if save:
+        persist("consolidation", summary,
+                {"off": off, "episodic": episodic, "consolidated": consolidated}, config)
+    return summary
+
+
+def persist(session: str, summary: dict, passes: dict, config: dict) -> None:
     out_dir = resolve_path("./eval_runs/memory")
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
@@ -440,8 +484,7 @@ def persist(session: str, summary: dict, off: List[QResult], on: List[QResult], 
             "max_rounds": config.get("agent", {}).get("max_rounds"),
         },
         "summary": summary,
-        "off": rows(off),
-        "on": rows(on),
+        "passes": {name: rows(results) for name, results in passes.items()},
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     logger.info("\n[saved] %s", path)
