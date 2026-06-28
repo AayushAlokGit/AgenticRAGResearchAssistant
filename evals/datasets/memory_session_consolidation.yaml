@@ -1,0 +1,154 @@
+# Memory eval — SESSION 5: knowledge consolidation / cross-session synthesis recall (capability E, slice 2)
+#
+# WHAT THIS TESTS (docs/memory/MEMORY_CAPABILITIES.md, capability E). The accumulation session
+# (memory_session_accumulation.yaml) showed that slice-1 episodic recall CANNOT reuse a prior
+# FACT across a reasoning chain (DD-049): a downstream question that *uses* a fact isn't similar
+# enough to the *question* that produced it (chain-hop sims ~0.2-0.4, well under the ~0.72 recall
+# floor). An offline crux check (scratchpad, 3 strategies x 5 pairs) confirmed NO single-vector
+# read — question->fact, answer->fact (HyDE-style), or hybrid — robustly bridges a chain, because
+# the link is compositional/causal (and often anaphoric: "the model", "that vector"), not topical.
+#
+# THE DESIGN CONCLUSION THIS SESSION TESTS: don't serve compositional reuse by atomic-fact
+# retrieval. Serve it by CONSOLIDATION — at session end, distil several related episodes into ONE
+# synthesis record — and recall that synthesis cross-session via the SAME question->question
+# mechanism slice 1 already proved (DD-046). The offline check measured this path at 0.68-0.83
+# (a broad future paraphrase -> the stored synthesis), squarely in the proven regime.
+#
+# THE SHAPE (why this is N:1, not the 1:1 of persistence). SESSION 1 asks three DISTINCT facets
+# of ONE topic (the ChromaDB-variant query path) -> three separate episodes. The store then
+# CONSOLIDATES them into one synthesis record, and the process RESTARTS (reload from disk, like
+# persistence). SESSION 2 asks a BROAD question spanning ALL three facets at once. A flat episodic
+# store can only recall the single nearest facet (a fragment); only a CONSOLIDATED record answers
+# the broad question cheaply and completely. That N:1 span is the whole point — it is what a merge
+# buys and a pile of raw episodes cannot.
+#
+# SCORING: the existing three meters (cost / outcome / precision), ON vs OFF, by role.
+#   - COST WIN  (role=repeat, c04/c05): the broad synthesis questions resolve in FEWER rounds+tokens
+#                ON than OFF, at held-equal correctness. This is the headline.
+#   - PRECISION (role=distractor, c06): a broad question about the PARALLEL topic (the Azure variant)
+#                must NOT be served the ChromaDB synthesis (embeddings collide; answers differ).
+#   - OUTCOME   (all): correctness must not drop; c07 (novel) is the no-harm probe.
+#
+# *** RUNNER CONTRACT this dataset implies (the NEXT build step) ***  The runner must, at the
+# session-1 -> 2 boundary, CONSOLIDATE the store (merge related episodes into a synthesis record)
+# BEFORE the simulated restart, then reload from disk. The most informative comparison is actually
+# THREE conditions, not two: OFF (no memory) vs ON-EPISODIC (raw episodes, no merge) vs
+# ON-CONSOLIDATED (merged). OFF-vs-ON-consolidated shows the end gain; ON-episodic is the middle
+# baseline that isolates what the MERGE adds over plain recall. Under slice 1 (no consolidation
+# yet) this session is HEADROOM: the broad c04/c05 will recall only the single nearest facet, so
+# expect a partial/weak cost win and possibly an incomplete answer — that gap is exactly what
+# consolidation is built to close. Treat a weak slice-1 result as the baseline to beat, not a bug.
+#
+# Extra fields: role, relates_to (the seeds a synthesis question spans), expect_recall, session.
+# Worked instance: the documentation-retrieval MCP server's ChromaDB query path
+# (02-Architecture + LOCAL_EMBEDDING_SERVICE + VECTOR_DB_INTERNALS) — facets proven answerable
+# (accumulation run scored 4/4 on the same facts); Azure variant proven answerable (persistence p02/p05).
+
+version: 1
+corpus: ./corpus
+
+questions:
+  # ═══ SESSION 1 — three DISTINCT facets of one topic; each writes its own episode ═══════════════
+  - id: c01
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "In the ChromaDB / local-embeddings variant of the documentation-retrieval MCP server, which embedding model is used and what is its output vector dimensionality?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+    should_abstain: false
+    expected_answer: "It uses the local Sentence-Transformers all-MiniLM-L6-v2 model, which produces 384-dimensional vectors."
+    notes: "Facet 1 of the query-path topic (model + dimensionality). One of three episodes consolidation must merge."
+
+  - id: c02
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "When that local embedding service turns a piece of text into its vector, what pooling and normalization does it apply to produce the final vector?"
+    match: all
+    expected_sources:
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+    should_abstain: false
+    expected_answer: "It runs the model forward pass, then applies MEAN POOLING over the token embeddings and finally L2 NORMALIZATION to produce a unit-length vector."
+    notes: "Facet 2 (pooling + L2 normalization)."
+
+  - id: c03
+    session: 1
+    role: seed
+    expect_recall: false
+    type: factual
+    question: "Once a unit-length vector is stored in the ChromaDB variant, what index type and similarity function are used to find the nearest matches?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "ChromaDB indexes the vectors with an HNSW index and ranks nearest neighbours by COSINE similarity (which, on unit-length vectors, is equivalent to the dot product)."
+    notes: "Facet 3 (index + similarity). With c01+c02 this is the full query path, spread across three episodes."
+
+  # ── ⟦ CONSOLIDATE then SIMULATED RESTART ⟧ — runner merges the three facets into one synthesis ──
+  # ── record, then reloads the store from disk (no RAM carry-over, as in persistence). ───────────
+
+  # ═══ SESSION 2 — BROAD questions spanning ALL three facets; only a merged record serves them ═══
+  - id: c04
+    session: 2
+    role: repeat
+    relates_to: [c01, c02, c03]
+    expect_recall: true
+    type: multi_hop
+    question: "Walk through the complete query path for the ChromaDB variant, from raw query text to the ranked nearest-neighbour results — name the model, the vector dimensionality, the pooling and normalization, the index, and the similarity function."
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "Raw query text -> all-MiniLM-L6-v2 forward pass -> mean pooling over token embeddings -> L2 normalization to a unit-length 384-dimensional vector -> stored/queried in ChromaDB via an HNSW index -> nearest neighbours ranked by cosine similarity (the dot product on unit vectors)."
+    notes: "HEADLINE: a broad N:1 synthesis spanning c01+c02+c03, asked AFTER restart. A flat episodic store recalls only ONE facet; the consolidated synthesis answers it whole + cheaply. The cost win here is what the merge buys."
+
+  - id: c05
+    session: 2
+    role: repeat
+    relates_to: [c01, c02, c03]
+    expect_recall: true
+    type: multi_hop
+    question: "For the local-embeddings ChromaDB setup, summarize end to end how a text query becomes ranked results: which model and dimensionality, what pooling and normalization, which index, and which similarity function?"
+    match: all
+    expected_sources:
+      - 02-Architecture-with-chromadb-local-embeddings.md
+      - LOCAL_EMBEDDING_SERVICE_DOCUMENTATION.md
+      - VECTOR_DB_INTERNALS.md
+    should_abstain: false
+    expected_answer: "Raw query text -> all-MiniLM-L6-v2 forward pass -> mean pooling over token embeddings -> L2 normalization to a unit-length 384-dimensional vector -> stored/queried in ChromaDB via an HNSW index -> nearest neighbours ranked by cosine similarity (the dot product on unit vectors)."
+    notes: "Second cost-win datapoint: a differently-phrased broad synthesis of the same topic (offline this paraphrase matched the stored synthesis at ~0.68)."
+
+  - id: c06
+    session: 2
+    role: distractor
+    relates_to: [c01, c02, c03]
+    expect_recall: false
+    type: multi_hop
+    question: "Walk through the complete query path for the Azure Cognitive Search variant, from raw query text to the ranked nearest-neighbour results — name the search backend, the embedding model, and the vector dimensionality."
+    match: all
+    expected_sources:
+      - 01-Architecture-with-azure-cognitive-search.md
+    should_abstain: false
+    expected_answer: "The Azure variant uses Azure Cognitive Search as the vector store and Azure OpenAI text-embedding-ada-002 (1536-dimensional) embeddings; a raw query is embedded with ada-002 and the nearest neighbours are retrieved from the Azure Cognitive Search index."
+    notes: "PRECISION: a broad synthesis of the PARALLEL topic, phrased to mirror c04's stem. NOTE the collision CEILING: this foil tops out at ~0.47 vs c04 (measured) — far below the ~0.757 of the one-token-diff distractors in the recall/persistence sessions, because the embedder genuinely separates the two architectures at the whole-query-path granularity. The test still bites: recall is threshold-free, so the top-1 ChromaDB synthesis is handed to c06 as a hint regardless of sim, and the agent must REJECT it and answer Azure. Read a pass here as 'agent rejected a moderately-tempting wrong synthesis,' not the sharp 0.757 case."
+
+  - id: c07
+    session: 2
+    role: novel
+    expect_recall: false
+    type: factual
+    question: "In the claims extraction pipeline, why are reserve-change dollar amounts pulled out with deterministic rules and never sent through the LLM?"
+    match: any
+    expected_sources:
+      - extractor.md
+      - DESIGN.md
+    should_abstain: false
+    expected_answer: "Because reserve amounts are exact, templated financial data where reproducibility is non-negotiable: a rule regex captures 'Changed to $321,014.00' precisely, whereas an LLM could silently round it. Rules where the text is templated and correctness is exact; the LLM only where the fact needs reading comprehension. A rule's failure mode is a recoverable 'no match'; an LLM's is a wrong number."
+    notes: "No-harm: unrelated to the topic; ON must not spuriously recall the synthesis (= agentic a15 / persistence p07)."
