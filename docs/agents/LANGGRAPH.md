@@ -164,9 +164,16 @@ gave **24/25 identical verdicts**, identical faithfulness, identical grounding �
 non-determinism** (DD-051), not the implementation: both agents call the same decide/answer
 functions, so given identical evidence they decide identically.
 
-**Not yet mapped:** the **checkpointer** is the twin of our episodic memory (`EpisodicStore`) —
-persistence/threads the framework provides natively. We left memory off (as in the champion), so
-this twin is an available follow-on rather than a built one.
+**Memory, now mapped (by reusing substrate).** Episodic memory is integrated the P5 way: our
+validated `EpisodicStore` is reused as-is, and the graph just orchestrates two hooks — a
+`memory_read` node at entry (recall top-k → set the `recalled` state field → the controller
+injects it as a hint) and a `memory_write` node at exit (write the answered Q→A). They're wired
+**only when a store is present**, so the no-memory graph stays byte-identical to the one we proved
+parity on. The **framework-native** twin — LangGraph's `BaseStore` (cross-thread memory with
+built-in semantic search) or a `checkpointer` (state persistence / resumable threads) — is the
+alternative we did *not* take: it would re-implement recall we've already validated. Reach for it
+when you want the framework's persistence/resume *for free*; reuse your own store when you already
+have a working one and only need the graph to call it at the right boundaries.
 
 ---
 

@@ -84,7 +84,7 @@ class AgentState(TypedDict):
     generator_usage: Usage                               # the answer call's token/latency cost
     grounded: bool                                       # output-ring guardrail: no fabricated citations
     ungrounded_citations: list
-    # Deferred: recalled -> episodic memory hint (memory step)
+    recalled: object                                     # recalled past episodes [(episode, sim), ...] or None; set once by memory_read
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────────────
@@ -95,11 +95,29 @@ class AgentState(TypedDict):
 
 def make_nodes(retriever, controller_llm, generator_llm, registry, store,
                react_prompt: str, answer_prompt: str, top_k: int, max_rounds: int,
-               answer_char_budget: int, ordering: str = "arrival"):
-    """Return (controller_node, tools_node, answer_node), each closing over the deps above."""
+               answer_char_budget: int, ordering: str = "arrival",
+               memory_store=None, recall_k: int = 1):
+    """Return the node closures. `memory_store` (an EpisodicStore or None) turns on episodic memory:
+    the substrate is REUSED unchanged — the graph just orchestrates a read hook at task start and a
+    write hook at task end (P5: framework orchestrates, we own the substrate)."""
     # Inject the tool list into the system prompt ONCE (a fixed instruction), same as run_agent.
     react_prompt = react_prompt.replace("{tools}", registry.render_for_prompt())
     ctx = ToolContext(retriever=retriever, store=store, top_k=top_k)
+
+    def memory_read_node(state: AgentState) -> dict:
+        """READ episodic memory once at task start; surface recalled episodes as a hint (DD-045)."""
+        if memory_store is None:
+            return {}
+        return {"recalled": memory_store.read(state["question"], k=recall_k)}
+
+    def memory_write_node(state: AgentState) -> dict:
+        """WRITE the answered question to episodic memory at task end (meta = sources + trajectory)."""
+        if memory_store is None:
+            return {}
+        sources = sorted({hit.source for hit in state["retrieved"]})
+        meta = {"sources": sources, "rounds_used": state["rounds"], "exit_reason": state["exit_reason"]}
+        memory_store.write(state["question"], state["answer"], meta=meta)
+        return {}
 
     def controller_node(state: AgentState) -> dict:
         """DECIDE — ask the controller for the next action(s). Twin of run_agent's decide + batch split.
@@ -109,7 +127,7 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
         """
         rounds_left = max_rounds - state["rounds"]
         turn = decide_next_action(controller_llm, react_prompt, registry, state["question"],
-                                  state["evidence"], state["steps"], rounds_left)
+                                  state["evidence"], state["steps"], rounds_left, state["recalled"])
         retrieval = [d for d in turn.decisions if not d.tool.terminal]
         update = {
             "controller_usage": turn.usage,
@@ -206,7 +224,7 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
             "ungrounded_citations": sorted(grounding.ungrounded),
         }
 
-    return controller_node, tools_node, answer_node
+    return controller_node, tools_node, answer_node, memory_read_node, memory_write_node
 
 
 # ── Edges + compile ───────────────────────────────────────────────────────────────────
@@ -234,16 +252,20 @@ def initial_state(question: str) -> AgentState:
         "generator_usage": Usage(),
         "grounded": True,
         "ungrounded_citations": [],
+        "recalled": None,
     }
 
 
 def build_graph(retriever, controller_llm, generator_llm, registry, store,
                 react_prompt: str, answer_prompt: str, top_k: int, max_rounds: int,
-                answer_char_budget: int, ordering: str = "arrival"):
-    """Compile the agent graph. `max_rounds` is captured by the routers below (the budget)."""
-    controller_node, tools_node, answer_node = make_nodes(
+                answer_char_budget: int, ordering: str = "arrival",
+                memory_store=None, recall_k: int = 1):
+    """Compile the agent graph. `max_rounds` is captured by the routers below (the budget).
+    `memory_store` (optional) adds a read hook at entry + a write hook at exit."""
+    controller_node, tools_node, answer_node, memory_read_node, memory_write_node = make_nodes(
         retriever, controller_llm, generator_llm, registry, store,
-        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering)
+        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering,
+        memory_store=memory_store, recall_k=recall_k)
 
     def route_after_controller(state: AgentState) -> str:
         # No retrieval chosen => the controller finished; otherwise go run the tools.
@@ -262,12 +284,22 @@ def build_graph(retriever, controller_llm, generator_llm, registry, store,
     builder.add_node("controller", controller_node)
     builder.add_node("tools", tools_node)
     builder.add_node("answer", answer_node)
-    builder.add_edge(START, "controller")
     builder.add_conditional_edges("controller", route_after_controller,
                                   {"tools": "tools", "answer": "answer"})
     builder.add_conditional_edges("tools", route_after_tools,
                                   {"controller": "controller", "answer": "answer"})
-    builder.add_edge("answer", END)
+    # Memory nodes are wired ONLY when a store is present, so the no-memory graph is byte-identical
+    # to the one we proved parity on: START -> memory_read -> controller ... answer -> memory_write -> END.
+    if memory_store is not None:
+        builder.add_node("memory_read", memory_read_node)
+        builder.add_node("memory_write", memory_write_node)
+        builder.add_edge(START, "memory_read")
+        builder.add_edge("memory_read", "controller")
+        builder.add_edge("answer", "memory_write")
+        builder.add_edge("memory_write", END)
+    else:
+        builder.add_edge(START, "controller")
+        builder.add_edge("answer", END)
     return builder.compile()
 
 
@@ -338,16 +370,21 @@ def main() -> None:
     parser.add_argument("question", nargs="+", help="The question to answer.")
     parser.add_argument("--max-rounds", type=int, default=None, help="Override agent.max_rounds.")
     parser.add_argument("--no-cache", action="store_true", help="Force the LLM cache OFF.")
+    parser.add_argument("--memory", action="store_true",
+                        help="Force episodic memory ON (overrides config.memory.enabled) — reads "
+                             "recalled episodes at task start, writes the answered Q at task end.")
     args = parser.parse_args()
 
     from dotenv import load_dotenv
 
     from agentic_rag.agent.loop import build_agent_deps
     from agentic_rag.agent.tools import DEFAULT_TOOLS
-    from agentic_rag.config import load_config
+    from agentic_rag.config import load_config, resolve_path
     from agentic_rag.llm.provider import build_llm
     from agentic_rag.logging_setup import configure_run_logging
+    from agentic_rag.memory.episodic import EpisodicStore
     from agentic_rag.rag.answer import load_prompt
+    from agentic_rag.rag.embeddings import LocalEmbedder
     from agentic_rag.rag.retriever import build_retriever
 
     load_dotenv()  # loads GROQ/GOOGLE keys AND the LANGSMITH_* vars so the invoke below auto-traces
@@ -366,8 +403,17 @@ def main() -> None:
     registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
     ordering = config.get("context", {}).get("ordering", "arrival")
 
+    memory_cfg = config.get("memory", {})
+    memory_store = None
+    recall_k = memory_cfg.get("recall_k", 1)
+    if args.memory or memory_cfg.get("enabled", False):
+        embedder = LocalEmbedder(config["embedding"]["model"])
+        memory_store = EpisodicStore(resolve_path(memory_cfg["path"]), embedder)
+        logger.info("agent: episodic memory ON (%d episode(s) in store)", len(memory_store))
+
     graph = build_graph(retriever, controller_llm, generator_llm, registry, store,
-                        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering)
+                        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering,
+                        memory_store=memory_store, recall_k=recall_k)
     question = " ".join(args.question)
     # recursion_limit = super-steps LangGraph will run before erroring; our cycle spends 2 per round
     # (controller + tools), so max_rounds*2 + a little slack is a safe backstop behind our own budget.
