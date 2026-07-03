@@ -18,6 +18,7 @@ THIS FILE, so far: step 3 — the State and its reducers only. Nodes/edges land 
 """
 from __future__ import annotations
 
+import logging
 import operator
 from typing import Annotated, List, TypedDict
 
@@ -29,6 +30,8 @@ from agentic_rag.agent.tools import ToolContext
 from agentic_rag.harness.guardrails import check_citation_grounding
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.vector_store import Hit
+
+logger = logging.getLogger(__name__)
 
 
 # ── Reducers ──────────────────────────────────────────────────────────────────────────
@@ -108,7 +111,11 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
         """READ episodic memory once at task start; surface recalled episodes as a hint (DD-045)."""
         if memory_store is None:
             return {}
-        return {"recalled": memory_store.read(state["question"], k=recall_k)}
+        recalled = memory_store.read(state["question"], k=recall_k)
+        if recalled:
+            logger.info("graph: memory recalled %d past episode(s) (top sim=%.3f) — surfaced as a hint",
+                        len(recalled), recalled[0][1])
+        return {"recalled": recalled}
 
     def memory_write_node(state: AgentState) -> dict:
         """WRITE the answered question to episodic memory at task end (meta = sources + trajectory)."""
