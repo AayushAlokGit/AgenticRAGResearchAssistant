@@ -438,7 +438,10 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
                 seeded_on_empty = True
                 seed_hits = retriever.query(question, top_k)
                 new_hits = scratchpad.add(seed_hits, retrieved_by="empty-finish-guard")
-                steps.append(AgentStep(finish_decision.thought, "finish",
+                # This step IS the seeded search (the guard ran retriever.query directly), so its
+                # action is "search", not "finish" — the controller ATTEMPTED finish (already counted
+                # in tool_calls above), but what actually happened in this step is a search.
+                steps.append(AgentStep(finish_decision.thought, "search",
                              observation=f"[GUARD: cannot finish with no evidence gathered — seeded a "
                                          f"search on the question -> {len(new_hits)} chunk(s). Review them "
                                          f"and search further if parts are still unanswered.]"))
