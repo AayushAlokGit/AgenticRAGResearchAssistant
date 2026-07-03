@@ -1,0 +1,24 @@
+# Keep the build context small — the backend image needs only pyproject/src/config/prompts.
+.git
+.venv
+venv
+env
+frontend
+node_modules
+__pycache__
+*.pyc
+.env
+.env.*
+chromadb_data
+corpus
+deploy
+logs
+*.log
+eval_runs
+traces
+experiments
+docs
+evals/datasets
+.vscode
+.idea
+.claude
