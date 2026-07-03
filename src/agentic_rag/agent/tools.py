@@ -182,19 +182,14 @@ def _run_expand_around_chunk(args: ExpandAroundChunkArgs, ctx: ToolContext) -> T
 
 
 def _load_doc_tags(store) -> dict:
-    """Load the per-doc FREE-FORM tags persisted next to the store (rag/tagging.py).
+    """Load the per-doc FREE-FORM tags from the store (rag/tagging.py).
 
-    Read straight from the store's persist dir so the tool needs no extra wiring; returns
-    {source: {doc_type, topics: [...], entities: [...]}} — empty if the corpus hasn't been tagged.
+    The store owns tag persistence, so this works whichever backend is active — a JSON file for
+    local Chroma, a table for pgvector. Returns {source: {doc_type, topics, entities}} — empty if
+    the corpus hasn't been tagged (or a store predating tag support).
     """
-    import json
-    from pathlib import Path
-
-    base = Path(getattr(store, "persist_directory", "") or "")
-    tags_file = base / "doc_tags.json"
-    if tags_file.exists():
-        return json.loads(tags_file.read_text(encoding="utf-8"))
-    return {}
+    loader = getattr(store, "load_tags", None)
+    return loader() if callable(loader) else {}
 
 
 def _format_doc_tags(tag: dict) -> str:

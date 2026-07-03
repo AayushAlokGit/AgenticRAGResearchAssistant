@@ -11,7 +11,9 @@ each doc's tags to the agent, which JUDGES relevance (threshold-free — the DD-
 is no hard metadata WHERE-filter, so the query vocabulary need not match the tag vocabulary
 exactly (a query for "vector store" still benefits from a doc tagged "vector database").
 
-Persisted as ``<vector_store>/doc_tags.json`` = {source: {doc_type, topics: [...], entities: [...]}}.
+Persisted by the active store backend (``store.save_tags`` / ``store.load_tags``) as
+{source: {doc_type, topics: [...], entities: [...]}} — a JSON file for local Chroma, a table for
+pgvector.
 
 Run:
     python -m agentic_rag.rag.tagging          # (re)tag the whole corpus, one call per doc
@@ -22,12 +24,11 @@ import json
 import logging
 import re
 import sys
-from pathlib import Path
 from typing import Dict, List
 
-from agentic_rag.config import load_config, resolve_path
+from agentic_rag.config import load_config
 from agentic_rag.rag.answer import load_prompt
-from agentic_rag.rag.vector_store import ChromaVectorStore
+from agentic_rag.rag.vector_store import ChromaVectorStore, build_store
 
 logger = logging.getLogger(__name__)
 
@@ -102,18 +103,9 @@ def tag_corpus(store: ChromaVectorStore, llm, prompt: str) -> Dict[str, dict]:
 
 
 # ───────────────────────────── persistence ─────────────────────────────
-
-def tags_path(config: dict) -> Path:
-    return resolve_path(config["vector_store"]["path"]) / "doc_tags.json"
-
-
-def load_tags(config: dict) -> Dict[str, dict]:
-    path = tags_path(config)
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-
-
-def save_tags(config: dict, tags: Dict[str, dict]) -> None:
-    tags_path(config).write_text(json.dumps(tags, indent=2, ensure_ascii=False), encoding="utf-8")
+# Tag persistence lives ON the store now (store.load_tags / store.save_tags), so it follows the
+# active backend: a JSON file for local Chroma, a table for pgvector. See rag/vector_store.py and
+# rag/pgvector_store.py.
 
 
 def main() -> None:
@@ -126,14 +118,13 @@ def main() -> None:
 
     configure_run_logging("rag/tagging")
     config = load_config()
-    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]),
-                              config["vector_store"]["collection"])
+    store = build_store(config)
     llm = build_llm(config, role="controller")   # cheap routing-tier model
     prompt = load_prompt(config, "tag_document")
 
     tags = tag_corpus(store, llm, prompt)
-    save_tags(config, tags)
-    print(f"[tagging] tagged {len(tags)} document(s) -> {tags_path(config)}")
+    store.save_tags(tags)
+    print(f"[tagging] tagged {len(tags)} document(s) -> {type(store).__name__}")
 
 
 if __name__ == "__main__":

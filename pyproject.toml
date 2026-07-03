@@ -20,6 +20,12 @@ dependencies = [
     "google-genai>=1.0",            # LLM provider (generator) — Gemini via the unified SDK
     "python-dotenv>=1.0",           # load GOOGLE_API_KEY / GROQ_API_KEY from a gitignored .env
     "pydantic>=2.0",                # typed tool-arg schemas for the agent's tool registry (A1)
+    # --- deploy: the pgvector store + the demo backend (server/) ---
+    "psycopg[binary,pool]>=3.2",    # Postgres client + connection pool for the pgvector store
+    "pgvector>=0.3",                # pgvector type adapters (Vector binding, cosine <=> search)
+    "fastapi>=0.115",               # demo backend HTTP API (server/app.py)
+    "uvicorn[standard]>=0.30",      # ASGI server for the FastAPI app
+    "sse-starlette>=2.1",           # Server-Sent Events streaming of the agent trajectory
 ]
 
 [tool.setuptools.packages.find]

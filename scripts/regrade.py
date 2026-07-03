@@ -20,7 +20,7 @@ from agentic_rag.evals.answer_correctness import judge_correctness
 from agentic_rag.evals.faithfulness import judge_faithfulness
 from agentic_rag.llm.provider import build_llm
 from agentic_rag.rag.answer import load_prompt
-from agentic_rag.rag.vector_store import ChromaVectorStore
+from agentic_rag.rag.vector_store import build_store
 
 SCORE = {"CORRECT": 1.0, "PARTIALLY_CORRECT": 0.5, "INCORRECT": 0.0}
 
@@ -29,8 +29,7 @@ def build_text_lookup(config: dict) -> dict:
     """{(source, chunk_index): text} for every stored chunk, so we can rebuild the EXACT context
     the generator saw. The run JSONs store only (source, chunk_index) for each retrieved chunk,
     not the text, so faith re-grading needs the corpus text back — and the vector store has it."""
-    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]),
-                              config["vector_store"]["collection"])
+    store = build_store(config)
     return {(c["source"], c["chunk_index"]): c["text"] for c in store.all_chunks()}
 
 

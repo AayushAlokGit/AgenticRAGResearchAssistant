@@ -49,7 +49,15 @@ class CrossEncoderReranker:
             from sentence_transformers import CrossEncoder
 
             logger.info("loading cross-encoder reranker: %s", self._model_name)
-            self._model = CrossEncoder(self._model_name)
+            # Load strictly from the local cache. The model is baked into the deploy image, so the
+            # container must NEVER reach huggingface.co — sentence-transformers otherwise fires a HEAD
+            # request to check for updates on load, and a blip on that call crashed a run. Cold cache
+            # (a fresh clone with nothing downloaded) falls back to a one-time online fetch.
+            try:
+                self._model = CrossEncoder(self._model_name, local_files_only=True)
+            except Exception:
+                logger.warning("reranker not in local cache — downloading once from the hub")
+                self._model = CrossEncoder(self._model_name)
 
     def rerank(self, query: str, hits: List[Hit], top_k: int) -> List[Hit]:
         """Re-score `hits` against `query` with the cross-encoder, return the top_k."""

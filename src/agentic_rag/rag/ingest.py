@@ -34,7 +34,7 @@ from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.rag.chunking import chunk_document
 from agentic_rag.rag.embeddings import build_embedder
 from agentic_rag.rag.tracker import DocumentProcessingTracker
-from agentic_rag.rag.vector_store import ChromaVectorStore
+from agentic_rag.rag.vector_store import build_store
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,7 @@ def ingest(force: bool = False, tag: bool = True) -> None:
     chunk_size = ingestion_cfg["chunk_size"]
     overlap = ingestion_cfg["chunk_overlap"]
     strategy = ingestion_cfg.get("chunking", {}).get("strategy", "fixed")
-    vs_cfg = config["vector_store"]
-
-    store = ChromaVectorStore(resolve_path(vs_cfg["path"]), vs_cfg["collection"])
+    store = build_store(config)
     tracker = DocumentProcessingTracker(resolve_path(config["ingestion"]["tracking_file"]))
     embedder = build_embedder(config)
 
@@ -133,11 +131,11 @@ def _update_tags(config: dict, store, to_tag: list, deleted_sources: list, force
     On --force we start fresh (the store + tracker were wiped); otherwise we load the existing tags
     and update them in place. Only builds the LLM when there's actually something to tag.
     """
-    from agentic_rag.rag.tagging import doc_snippets, extract_tags, load_tags, save_tags
+    from agentic_rag.rag.tagging import doc_snippets, extract_tags
 
     if not to_tag and not deleted_sources:
         return
-    tags = {} if force else load_tags(config)
+    tags = {} if force else store.load_tags()
     for source in deleted_sources:
         tags.pop(source, None)
     if to_tag:
@@ -151,7 +149,7 @@ def _update_tags(config: dict, store, to_tag: list, deleted_sources: list, force
             if source in snippets:
                 tags[source] = extract_tags(snippets[source], llm, prompt)
                 logger.info(f"   # tagged: {source} -> {tags[source].get('doc_type', '?')}")
-    save_tags(config, tags)
+    store.save_tags(tags)
     logger.info(f"[ingest] tags now cover {len(tags)} document(s)")
 
 

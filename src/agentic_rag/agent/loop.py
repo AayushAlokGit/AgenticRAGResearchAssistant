@@ -641,12 +641,10 @@ def build_agent_deps(config: dict, tool_names: List[str]):
     store construction once). The store is built here, not dug out of the retriever, so the
     tools that read the corpus directly (expand_document, list_sources) have an explicit handle.
     """
-    from agentic_rag.config import resolve_path
-    from agentic_rag.rag.vector_store import ChromaVectorStore
+    from agentic_rag.rag.vector_store import build_store
 
     registry = build_registry(tool_names)
-    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]),
-                              config["vector_store"]["collection"])
+    store = build_store(config)
     return registry, store
 
 

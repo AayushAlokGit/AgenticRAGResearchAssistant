@@ -27,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from agentic_rag.agent.loop import (OSCILLATION_PATIENCE, AgentStep, Decision, Scratchpad,
                                     answer_from_evidence, decide_next_action, provenance_label)
 from agentic_rag.agent.tools import ToolContext
-from agentic_rag.harness.guardrails import check_citation_grounding
+from agentic_rag.harness.guardrails import check_citation_grounding, spend_cap_tripped
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.vector_store import Hit
 
@@ -99,7 +99,7 @@ class AgentState(TypedDict):
 def make_nodes(retriever, controller_llm, generator_llm, registry, store,
                react_prompt: str, answer_prompt: str, top_k: int, max_rounds: int,
                answer_char_budget: int, ordering: str = "arrival",
-               memory_store=None, recall_k: int = 1):
+               memory_store=None, recall_k: int = 1, spend_cap_tokens: int = 0):
     """Return the node closures. `memory_store` (an EpisodicStore or None) turns on episodic memory:
     the substrate is REUSED unchanged — the graph just orchestrates a read hook at task start and a
     write hook at task end (P5: framework orchestrates, we own the substrate)."""
@@ -213,6 +213,15 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
                 update["exit_reason"] = "oscillation"
         elif round_new:
             update["consecutive_redundant"] = 0   # progress clears the streak
+
+        # ACTION-ring spend cap (DD-052): a per-question ceiling on CONTROLLER tokens — the loop's
+        # true cost unit (batching makes rounds a loose proxy). run_agent checks it at the top of each
+        # round; the graph twin checks after this round's controller+tools ran, using the cumulative
+        # controller_usage already merged into state. Set the reason here; route_after_tools does the
+        # matching stop (the same node-sets-reason / router-routes split the oscillation guard uses).
+        # Cost wins over oscillation, so this override comes last.
+        if spend_cap_tripped(state["controller_usage"], spend_cap_tokens):
+            update["exit_reason"] = "spend_cap"
         return update
 
     def answer_node(state: AgentState) -> dict:
@@ -266,20 +275,24 @@ def initial_state(question: str) -> AgentState:
 def build_graph(retriever, controller_llm, generator_llm, registry, store,
                 react_prompt: str, answer_prompt: str, top_k: int, max_rounds: int,
                 answer_char_budget: int, ordering: str = "arrival",
-                memory_store=None, recall_k: int = 1):
+                memory_store=None, recall_k: int = 1, spend_cap_tokens: int = 0):
     """Compile the agent graph. `max_rounds` is captured by the routers below (the budget).
-    `memory_store` (optional) adds a read hook at entry + a write hook at exit."""
+    `memory_store` (optional) adds a read hook at entry + a write hook at exit.
+    `spend_cap_tokens` (0 = off) is the ACTION-ring controller-token ceiling (DD-052)."""
     controller_node, tools_node, answer_node, memory_read_node, memory_write_node = make_nodes(
         retriever, controller_llm, generator_llm, registry, store,
         react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering,
-        memory_store=memory_store, recall_k=recall_k)
+        memory_store=memory_store, recall_k=recall_k, spend_cap_tokens=spend_cap_tokens)
 
     def route_after_controller(state: AgentState) -> str:
         # No retrieval chosen => the controller finished; otherwise go run the tools.
         return "answer" if not state["pending"] else "tools"
 
     def route_after_tools(state: AgentState) -> str:
-        # Oscillation first (matches the hand-rolled order): a spinning loop stops before the budget.
+        # Spend cap first (matches run_agent's round-top order): the cost circuit-breaker wins.
+        if spend_cap_tripped(state["controller_usage"], spend_cap_tokens):
+            return "answer"
+        # Oscillation next: a spinning loop stops before the budget.
         if state["consecutive_redundant"] >= OSCILLATION_PATIENCE:
             return "answer"
         # Budget check (the loop's exit condition): stop after max_rounds controller turns.
@@ -359,8 +372,10 @@ def build_graph_answerer(config: dict, retriever, generator_llm, controller_llm)
     answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
     registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
     ordering = config.get("context", {}).get("ordering", "arrival")
+    spend_cap_tokens = config.get("guardrails", {}).get("spend_cap_tokens", 0)
     graph = build_graph(retriever, controller_llm, generator_llm, registry, store,
-                        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering)
+                        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering,
+                        spend_cap_tokens=spend_cap_tokens)
     return GraphAnswerer(graph, max_rounds)
 
 
@@ -380,6 +395,8 @@ def main() -> None:
     parser.add_argument("--memory", action="store_true",
                         help="Force episodic memory ON (overrides config.memory.enabled) — reads "
                              "recalled episodes at task start, writes the answered Q at task end.")
+    parser.add_argument("--spend-cap", type=int, default=None,
+                        help="Override guardrails.spend_cap_tokens (controller-token ceiling; 0 = off).")
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -409,6 +426,8 @@ def main() -> None:
     answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
     registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
     ordering = config.get("context", {}).get("ordering", "arrival")
+    spend_cap_tokens = (args.spend_cap if args.spend_cap is not None
+                        else config.get("guardrails", {}).get("spend_cap_tokens", 0))
 
     memory_cfg = config.get("memory", {})
     memory_store = None
@@ -420,7 +439,7 @@ def main() -> None:
 
     graph = build_graph(retriever, controller_llm, generator_llm, registry, store,
                         react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering,
-                        memory_store=memory_store, recall_k=recall_k)
+                        memory_store=memory_store, recall_k=recall_k, spend_cap_tokens=spend_cap_tokens)
     question = " ".join(args.question)
     # recursion_limit = super-steps LangGraph will run before erroring; our cycle spends 2 per round
     # (controller + tools), so max_rounds*2 + a little slack is a safe backstop behind our own budget.

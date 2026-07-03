@@ -23,7 +23,7 @@ from typing import List, Optional
 from agentic_rag.config import resolve_path
 from agentic_rag.rag.bm25 import BM25Index
 from agentic_rag.rag.embeddings import build_embedder
-from agentic_rag.rag.vector_store import ChromaVectorStore, Hit
+from agentic_rag.rag.vector_store import ChromaVectorStore, Hit, build_store
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[b
     if mode is None:
         mode = retrieval_cfg.get("mode", "dense")
 
-    store = ChromaVectorStore(resolve_path(config["vector_store"]["path"]), config["vector_store"]["collection"])
+    store = build_store(config)
     if store.count() == 0:
         raise SystemExit("Vector store is empty — run `python -m agentic_rag.rag.ingest` first.")
     embedder = build_embedder(config)

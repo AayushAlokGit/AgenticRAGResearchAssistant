@@ -11,7 +11,9 @@ so a different backend could replace it behind the same methods later.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 import chromadb
@@ -137,3 +139,46 @@ class ChromaVectorStore:
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name, metadata=_COLLECTION_METADATA
         )
+
+    # ── per-doc free-form tags (rag/tagging.py) ─────────────────────────────────────────────
+    # The store owns tag persistence so it follows the backend: local Chroma keeps a JSON file
+    # beside the vectors; the pgvector backend keeps a table. Same two methods either way.
+    def _tags_path(self) -> Path:
+        return Path(self.persist_directory) / "doc_tags.json"
+
+    def load_tags(self) -> dict:
+        """Return {source: {doc_type, topics, entities}} — empty if the corpus hasn't been tagged."""
+        path = self._tags_path()
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def save_tags(self, tags: dict) -> None:
+        """Persist the full tag map (caller passes the complete desired state)."""
+        self._tags_path().write_text(
+            json.dumps(tags, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+
+def build_store(config: dict):
+    """Pick the vector store from config: ``vector_store.provider`` = chromadb | pgvector.
+
+    One factory so the construction sites don't each branch — the same "shape it so a swap is
+    cheap" move as ``build_embedder`` and the LLM layer. Local dev keeps ChromaDB (a directory
+    on disk); the deployed backend points this at Postgres+pgvector, whose durable storage
+    survives an ephemeral host. Both back ends expose the identical method surface, so the
+    retriever/ingest/tagging code above the store is untouched by the swap.
+    """
+    from agentic_rag.config import resolve_path
+
+    vs = config["vector_store"]
+    provider = vs.get("provider", "chromadb")
+    if provider in ("pgvector", "postgres"):
+        # Lazy import: psycopg/pgvector only load when the Postgres backend is actually selected,
+        # so local Chroma runs don't pay for a dependency they don't use.
+        from agentic_rag.rag.pgvector_store import PgVectorStore
+
+        return PgVectorStore(vs["collection"], dims=config["embedding"].get("dims", 768))
+    if provider in ("chromadb", "chroma"):
+        return ChromaVectorStore(resolve_path(vs["path"]), vs["collection"])
+    raise ValueError(
+        f"Unknown vector_store.provider {provider!r} (expected 'chromadb' or 'pgvector')"
+    )
