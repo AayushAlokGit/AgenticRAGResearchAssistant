@@ -142,10 +142,10 @@ ordered, state-persisting run, scored ON vs OFF):
 
 | Capability | Session | Status |
 |---|---|---|
-| **A, B** (recall reuse + precision) | `memory_session.yaml` — seed/repeat/distractor/novel | ✅ built (slice 1) |
-| **C** (cross-session persistence) | Session 2 — seed → restart → repeat | ⬜ planned |
-| **D** (staleness / forgetting) | Session 3 — seed → corpus change → re-ask | ⬜ planned (arc step 2) |
-| **E** (knowledge accumulation) | Session 4 — dependent chain | ⬜ planned (arc step 3) |
+| **A, B** (recall reuse + precision) | `memory_session.yaml` — seed/repeat/distractor/novel | ✅ built + validated (slice 1, DD-046) |
+| **C** (cross-session persistence) | Session 2 — seed → restart → repeat | ✅ validated (DD-047) |
+| **D** (staleness / forgetting) | Session 3 — seed → corpus change → re-ask | ✅ validated (DD-048) — staleness is structurally prevented; *forget* itself deferred (needs a volume-stress corpus) |
+| **E** (knowledge accumulation) | Session 4 — dependent chain | ✅ measured (DD-049) — episodic recall gives no benefit on a dependent chain; motivated consolidation (built + reverted, DD-050) |
 | **G** (faithfulness) | folded into Session 1 (m11) and Session 3 | 🟡 partial |
 | **F, H** (continuity, feedback) | deliberate headroom — low dials | ❌ noted, unbuilt |
 

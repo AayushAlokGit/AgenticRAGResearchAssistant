@@ -178,8 +178,8 @@ prove against. We build to learn the loop, not because the dials are already cra
 | Type | In this project | Status |
 |---|---|---|
 | **Working** | the agent's per-task **scratchpad** of gathered evidence (`agent/loop.py`) | ✅ already have it |
-| **Episodic** | a **soft cache** of past Q→A episodes — save each answered question; on a near-repeat, recall it and let the controller finish in fewer rounds | 🟡 Module 4, slice 1 (building) |
-| **Semantic** | **consolidate** clusters of episodes into stable distilled facts | ⬜ planned (slice 3) |
+| **Episodic** | a **soft cache** of past Q→A episodes — save each answered question; on a near-repeat, recall it and let the controller finish in fewer rounds | ✅ built + validated (slice 1, DD-045→049) |
+| **Semantic** | **consolidate** clusters of episodes into stable distilled facts | 🔬 built + measured + reverted (DD-050) — machinery correct, broad-recall win didn't clear the noise; reproducible at commit `7d97af5` |
 | **Procedural** | learned retrieval/stopping strategies from past trajectories | ⬜ stretch (low feedback dial) |
 
 **The honest-measurement problem, made concrete (P6).** This is the module's headline

@@ -2,7 +2,7 @@
 
 A from-scratch, **eval-gated** agentic RAG system that answers complex, multi-hop
 questions over an evolving document corpus — with grounded, cited answers and a
-hand-rolled ReAct agent loop (no LangGraph).
+hand-rolled ReAct agent loop (later re-expressed as a LangGraph twin to prove parity).
 
 Built learning-first: every retrieval technique had to **beat a versioned eval set or get
 reverted**, and the negative results were *kept and documented*. The point isn't a chatbot —
@@ -115,9 +115,17 @@ evidence.
    oscillation/budget/empty-finish stop conditions. *(done)*
 3. **Context engineering** — router-view for the controller, token-budgeted final answer;
    heavier selection strategies explored and mostly reverted (DD-023). *(explored)*
-4. **Memory** — working + long-term memory across sessions. *(not started — `memory/` is a stub)*
-5. **Harness** — logging, retries/backoff, a provider-fallback router (Gemini → Groq), and
-   per-role cost/latency instrumentation. *(partial)*
+4. **Memory** — an episodic "soft cache" of past Q→A episodes, recalled across sessions and
+   left for the *agent* to judge (no similarity threshold gate); validated on a sequenced
+   ON-vs-OFF eval. *(done)*
+5. **Harness** — logging, retries/backoff, a provider-fallback router (Gemini → Groq),
+   per-role cost/latency instrumentation, a content-addressed response cache, and
+   spend-cap + citation-grounding guardrails. *(done — deliberately a light pass)*
+
+**Capstone.** The hand-rolled loop was then re-expressed as a **LangGraph** `StateGraph` and
+proven to reach the same eval verdicts (24/25 identical) — built by hand first, so each
+framework abstraction mapped to a piece already understood. The synthesis of what every module
+taught is in `docs/RETROSPECTIVE.md`.
 
 ## How to run
 

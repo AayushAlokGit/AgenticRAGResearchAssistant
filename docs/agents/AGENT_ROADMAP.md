@@ -1,5 +1,11 @@
 # Building Production-Grade Agents — Roadmap & Progress Log
 
+> **STATUS (2026-07-03): the curriculum is complete.** The agent was built out through the
+> LangGraph capstone; the change-by-change trail lives in `DESIGN_DECISIONS.md` (DD-028→053)
+> and the synthesis of what each phase taught is in `docs/RETROSPECTIVE.md`. The curriculum
+> and Progress Log below are preserved as the historical plan and record — the "next / we are
+> here" markers in them are frozen at the moment they were written, not live status.
+
 This is the **curriculum and the running log** for evolving this project's agent loop from a
 basic single-tool ReAct loop into a production-grade agent — and, more importantly, for
 *learning* every concept that goes into one. It is general-first (the transferable idea),
@@ -64,7 +70,7 @@ don't exist yet because there's nothing to select between. So the curriculum sta
 - **A1. Multi-tool agent + a tool registry.** Generalize the single `search` action into a
   typed tool set with a dispatcher. Tools: `search`, `expand_document` (small→big on demand),
   `list_sources`, `finish`. Hand-rolled first (understand dispatch/schemas before the API).
-  *Upgrades: action space.* **← we are here**
+  *Upgrades: action space.*
 - **A2. Native tool-calling vs hand-rolled JSON.** Swap hand-parsed JSON actions for the
   provider's tool-use API; A/B them so you feel what it abstracts (schema enforcement, the
   tool-call/tool-result message protocol, parallel calls). *This is Module 5's "typed tool

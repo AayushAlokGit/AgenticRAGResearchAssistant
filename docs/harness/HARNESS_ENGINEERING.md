@@ -264,11 +264,13 @@ a decisive win. The `latency_s` field exists *because* P5 says meter-before-cont
 and P6 says the harness moves the operational axis.
 
 **What's deferred, and why.** **Native tool-calling** (the provider's own
-function-calling API) is deferred to the **LangGraph capstone** — adopting it now
-would re-introduce the very abstraction we hand-rolled the loop to understand
-(CLAUDE.md's "hand-rolled before framework magic"). The capstone will re-derive
-each hand-built ring in LangGraph and map it to its twin, which is the payoff of
-having built them by hand first.
+function-calling API) remains unbuilt. The **LangGraph capstone** (DD-053) re-expressed
+the loop's *control flow* as a graph but deliberately **reused the hand-rolled JSON
+controller** (`decide_next_action`) unchanged — so it re-derived each hand-built ring and
+mapped it to its LangGraph twin (the payoff of having built them by hand first) *without*
+adopting native tool-calling. Swapping in the provider's function-calling API would
+re-introduce the very abstraction we hand-rolled the loop to understand (CLAUDE.md's
+"hand-rolled before framework magic"), so it stays a deliberate, open next step.
 
 ---
 

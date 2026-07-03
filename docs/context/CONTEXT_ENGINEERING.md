@@ -127,7 +127,7 @@ Select / Order / light Compress — and we are.
 | **Order** | arrival order in the scratchpad (search-1 hits, then search-2…); the ordering A/B (arrival vs interleaved vs grouped) is the open lever | 🟡 partly, one A/B open |
 | **Compress** | the controller sees a compact **router-view** (source + 300-char snippet), not full text (`router_view`); the final answer is char-budgeted | 🟡 a *baby* version — see below |
 | **Isolate** | none — single agent, one shared scratchpad | ❌ (dial is at 1) |
-| **Persist** | none yet — each question starts blank | ❌ Module 4 (memory) |
+| **Persist** | an episodic soft cache of past Q→A episodes, recalled across sessions (Module 4) | ✅ built after this module (DD-045→050) |
 | **Offload** | none — we stuff retrieved chunks straight into the window | ❌ |
 | **Format** | source-labeled passages (`[source: X]`) so the model can cite; JSON tool-action schema for the controller | partial |
 
@@ -179,8 +179,9 @@ attention responds to repetition, not just to information content.)
   enough to need it (a batched round can gather more at once — DD-041 — but the char-budget
   trim keeps it bounded). *This is the first deferred lever we have the machinery to measure* — a
   summarize-the-scratchpad A/B is the natural next experiment.
-- **Persist (memory).** Module 4. Needed the moment we want the system to get smarter
-  *across* sessions — the project's stated goal, not yet reached.
+- **Persist (memory).** Module 4 — built *after* this module (DD-045→050): an episodic soft
+  cache that lets the system get smarter *across* sessions, the project's stated goal. See
+  `docs/memory/MEMORY_ENGINEERING.md`.
 - **Isolate (sub-agents).** Only pays off at agent-count > 1. We're single-agent by
   design (hand-rolled to learn the loop), so it's correctly absent.
 - **Offload (tools/files as context).** Our corpus is small and retrieval already
