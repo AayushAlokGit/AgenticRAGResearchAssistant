@@ -37,6 +37,12 @@ guardrails:
   # ~15k) — it's the defense-in-depth backstop for what rounds DON'T bound: a batched round fanning
   # out many searches, a raised max_rounds, or scratchpad bloat. RE-DERIVE if max_rounds changes.
   spend_cap_tokens: 30000
+  # ABUSE ring (deployed demo): a DURABLE per-DAY ceiling on total tokens spent across ALL visitors —
+  # the $0 kill-switch. Persisted in Postgres (server/budget.py), so restarting the ephemeral host
+  # can't reset it and let a bot restart-farm the quota. On a trip, /ask returns a friendly "resting"
+  # message instead of spending. 0 = OFF. Cache HITS cost 0 tokens, so they don't count against this.
+  # TUNE below your Gemini free-tier tokens-per-day so the demo degrades before it could ever bill.
+  daily_token_budget: 1000000
 
 embedding:
   provider: gemini # local | gemini — selects the embedder (build_embedder). local = torch/CPU; gemini = cloud API.

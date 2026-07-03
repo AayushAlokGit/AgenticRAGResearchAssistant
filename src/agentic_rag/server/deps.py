@@ -24,6 +24,7 @@ class AppState:
     store: object          # the tools' store handle — also used for /sources and /health
     max_rounds: int
     model_names: dict      # {"controller": ..., "generator": ...} for /config
+    budget: object = None  # DailyBudget or None (the durable $0 kill-switch)
 
 
 def build_app_state() -> AppState:
@@ -72,5 +73,19 @@ def build_app_state() -> AppState:
     }
     logger.info("server: graph built (store holds %d chunks, max_rounds=%d, spend_cap=%d)",
                 store.count(), max_rounds, spend_cap_tokens)
+
+    # Durable daily token budget (the $0 kill-switch). Needs Postgres; skipped if off or no DB.
+    daily_budget = int(os.environ.get(
+        "DAILY_TOKEN_BUDGET", config.get("guardrails", {}).get("daily_token_budget", 0)))
+    budget = None
+    dsn = os.environ.get("DATABASE_URL")
+    if daily_budget > 0 and dsn:
+        from agentic_rag.server.budget import DailyBudget
+
+        budget = DailyBudget(dsn, daily_budget)
+        logger.info("server: daily token budget = %d tokens/day (persisted in Postgres)", daily_budget)
+    elif daily_budget > 0:
+        logger.warning("server: daily_token_budget set but no DATABASE_URL — cap DISABLED")
+
     return AppState(config=config, graph=graph, store=store,
-                    max_rounds=max_rounds, model_names=model_names)
+                    max_rounds=max_rounds, model_names=model_names, budget=budget)

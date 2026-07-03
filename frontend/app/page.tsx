@@ -440,6 +440,9 @@ export default function Home() {
       {/* cost meter */}
       {done && (
         <section className="mt-4 mb-10 flex flex-wrap items-center gap-1.5">
+          {done.total_tokens === 0 && (
+            <Badge className="border-sky-500/40 text-sky-300">cached ✓ · served free</Badge>
+          )}
           <Badge className={EXIT_STYLES[done.exit_reason] ?? ""}>exit: {done.exit_reason}</Badge>
           <Badge>{done.rounds} rounds</Badge>
           <Badge>ctrl {done.controller_tokens} tok</Badge>

@@ -100,6 +100,7 @@ class ConfigResponse(BaseModel):
     tools: List[str]
     spend_cap_tokens: int
     store_provider: str
+    daily_token_budget: int = 0
 
 
 class HealthResponse(BaseModel):
