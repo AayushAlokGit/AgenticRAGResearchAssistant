@@ -171,9 +171,17 @@ injects it as a hint) and a `memory_write` node at exit (write the answered Q→
 **only when a store is present**, so the no-memory graph stays byte-identical to the one we proved
 parity on. The **framework-native** twin — LangGraph's `BaseStore` (cross-thread memory with
 built-in semantic search) or a `checkpointer` (state persistence / resumable threads) — is the
-alternative we did *not* take: it would re-implement recall we've already validated. Reach for it
-when you want the framework's persistence/resume *for free*; reuse your own store when you already
-have a working one and only need the graph to call it at the right boundaries.
+alternative we prototyped and **reverted**, for a sharp transferable reason: **the framework twin
+isn't a superset.** LangGraph ships *no* SQLite Store — only `InMemoryStore` (ephemeral,
+per-process) and `PostgresStore` (a separate package needing a running server). So rewiring the
+graph onto the native Store *lost* the on-disk cross-session durability our `EpisodicStore`
+(JSON + cosine) gives for free — the framework assumes you'll bring a real database for
+persistence. (The rewrite worked in-process: an `InMemoryStore` with an embedding index,
+dependency-injected via `compile(store=…)`, recalled a paraphrase at score 0.877.) The takeaway:
+reach for the framework's Store when you want its *infrastructure* — Postgres-scale durability,
+per-user namespacing, resumable threads; keep your own when you need lightweight **local**
+persistence and only want the graph to call it at the right boundaries. Reusing a working
+substrate isn't the lesser choice — here it was the *better* one.
 
 ---
 
