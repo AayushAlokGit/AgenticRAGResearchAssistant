@@ -41,6 +41,7 @@ from pydantic import BaseModel, ValidationError
 
 from agentic_rag.agent.tools import DEFAULT_TOOLS, Tool, ToolContext, ToolRegistry, build_registry
 from agentic_rag.context import order_evidence
+from agentic_rag.harness.guardrails import check_citation_grounding, spend_cap_tripped
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.answer import (AnswerResult, Trajectory, assemble_context, generate_answer,
                                     load_prompt)
@@ -354,7 +355,8 @@ def _decision_from_obj(data, registry: ToolRegistry) -> Optional[Decision]:
 def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: str,
               top_k: int, max_rounds: int, answer_char_budget: int,
               registry: ToolRegistry, store, controller_llm=None,
-              ordering: str = "arrival", memory_store=None, recall_k: int = 1) -> AnswerResult:
+              ordering: str = "arrival", memory_store=None, recall_k: int = 1,
+              spend_cap_tokens: int = 0) -> AnswerResult:
     """Run the retrieve -> reason -> act loop, then answer from the gathered evidence.
 
     `llm` writes the final answer (the generator); `controller_llm` makes the routing
@@ -397,6 +399,15 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
 
     rounds_used = 0              # controller turns taken (the budget unit); a batch is ONE round
     for round_index in range(max_rounds):
+        # ACTION-ring guardrail (spend-cap): stop before spending MORE once the controller has
+        # reached its token ceiling — the loop's true cost unit, unlike max_rounds. Never trips
+        # round 0 (usage is 0), so we always gather at least once, then answer from what we have
+        # (graceful, like the budget exit). Denominated in CONTROLLER tokens: it's the part that spins.
+        if spend_cap_tripped(controller_usage, spend_cap_tokens):
+            logger.info("agent: controller spend-cap reached (%d >= %d tokens) — stopping (spend_cap guard)",
+                        controller_usage.total_tokens, spend_cap_tokens)
+            exit_reason = "spend_cap"
+            break
         rounds_left = max_rounds - round_index
         logger.info("agent: --- round %d/%d --- scratchpad=%d chunk(s)",
                     round_index + 1, max_rounds, len(scratchpad))
@@ -494,6 +505,19 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     result.trajectory = Trajectory(rounds_used=rounds_used, exit_reason=exit_reason,
                                    tool_calls=tool_calls, tool_errors=tool_errors,
                                    redundant_searches=redundant_searches)
+
+    # OUTPUT-ring guardrail (flag-only): confirm every source the answer cites was actually in the
+    # evidence the generator saw (result.retrieved = the trimmed+ordered window). A cited file that
+    # isn't there is a fabricated citation — we RECORD and warn, but return the answer unchanged
+    # (observe-before-enforce). This is the cheap deterministic check; the eval's LLM faithfulness
+    # judge is the offline complement.
+    grounding = check_citation_grounding(result.answer, result.retrieved)
+    result.trajectory.grounded = grounding.is_grounded
+    result.trajectory.ungrounded_citations = sorted(grounding.ungrounded)
+    if not grounding.is_grounded:
+        logger.warning("agent: OUTPUT-ring guardrail tripped — answer cites %d source(s) NOT in "
+                       "evidence (fabricated): %s", len(grounding.ungrounded), sorted(grounding.ungrounded))
+
     total_calls = result.controller_usage.calls + result.generator_usage.calls
     total_tokens = result.controller_usage.total_tokens + result.generator_usage.total_tokens
     preview = result.answer.strip().replace("\n", " ")[:100]
@@ -595,13 +619,15 @@ class Answerer:
     registry: ToolRegistry = None     # the agent's action space (agent.tools)
     store: object = None              # backs corpus-reading tools (expand_document, list_sources)
     ordering: str = "arrival"         # Module-3 ORDER lever for the final window (context.ordering)
+    spend_cap_tokens: int = 0         # Module-5 action-ring guardrail; 0 = off (guardrails.spend_cap_tokens)
 
     def answer(self, question: str) -> AnswerResult:
         if self.agentic:
             return run_agent(question, self.retriever, self.llm, self.react_prompt,
                              self.answer_prompt, self.top_k, self.max_rounds,
                              self.answer_char_budget, self.registry, self.store,
-                             controller_llm=self.controller_llm, ordering=self.ordering)
+                             controller_llm=self.controller_llm, ordering=self.ordering,
+                             spend_cap_tokens=self.spend_cap_tokens)
         return generate_answer(question, self.retriever, self.llm, self.answer_prompt, self.top_k)
 
 
@@ -642,9 +668,10 @@ def build_answerer(config: dict, retriever, llm, controller_llm=None) -> Answere
         registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
 
     ordering = config.get("context", {}).get("ordering", "arrival")  # Module-3 ORDER lever
+    spend_cap_tokens = config.get("guardrails", {}).get("spend_cap_tokens", 0)  # Module-5 action ring
     return Answerer(retriever, llm, answer_prompt, top_k, agentic, react_prompt, max_rounds,
                     answer_char_budget, controller_llm=controller_llm, registry=registry, store=store,
-                    ordering=ordering)
+                    ordering=ordering, spend_cap_tokens=spend_cap_tokens)
 
 
 # ───────────────────────────── manual single-question run ─────────────────────────────
@@ -665,6 +692,9 @@ def main() -> None:
     parser.add_argument("--no-cache", action="store_true",
                         help="Force the LLM response cache OFF for this run (overrides "
                              "config.cache.enabled) — the cold, uncached A/B control.")
+    parser.add_argument("--spend-cap", type=int, default=None,
+                        help="Override guardrails.spend_cap_tokens (controller-token ceiling; "
+                             "0 = off). A low value demonstrates the action-ring spend-cap guard.")
     args = parser.parse_args()
 
     from agentic_rag.config import load_config, resolve_path
@@ -689,6 +719,7 @@ def main() -> None:
     tool_names = [t.strip() for t in args.tools.split(",")] if args.tools else agent_cfg.get("tools", DEFAULT_TOOLS)
     registry, store = build_agent_deps(config, tool_names)
     ordering = config.get("context", {}).get("ordering", "arrival")
+    spend_cap_tokens = args.spend_cap if args.spend_cap is not None else config.get("guardrails", {}).get("spend_cap_tokens", 0)
 
     memory_cfg = config.get("memory", {})
     memory_store = None
@@ -702,7 +733,8 @@ def main() -> None:
     question = " ".join(args.question)
     result = run_agent(question, retriever, llm, react_prompt, answer_prompt, top_k, max_rounds,
                        answer_char_budget, registry, store, controller_llm=controller_llm,
-                       ordering=ordering, memory_store=memory_store, recall_k=recall_k)
+                       ordering=ordering, memory_store=memory_store, recall_k=recall_k,
+                       spend_cap_tokens=spend_cap_tokens)
 
     print(f"\nQ: {result.question}\n")
     print(f"A: {result.answer}\n")

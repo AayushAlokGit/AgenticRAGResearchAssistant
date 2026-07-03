@@ -26,6 +26,18 @@ cache:
   enabled: true
   path: ./chromadb_data/llm_cache.sqlite # persistent, gitignored (under chromadb_data/)
 
+guardrails:
+  # Module 5 (harness), Safety ring. ACTION-ring spend-cap: a per-question ceiling on CONTROLLER
+  # tokens — the loop's TRUE cost unit (max_rounds bounds iterations, but batching makes one round
+  # cost a variable number of calls, so rounds are a loose proxy for spend). 0 = OFF. On a trip the
+  # loop stops and answers from evidence-so-far (exit_reason=spend_cap).
+  # Calibrated as a CIRCUIT BREAKER, not a target: set ABOVE the worst legitimate case so it never
+  # trips normal load, only genuine runaway. Cold agentic.yaml run: controller max 15,329 tok/Q
+  # (mean 7,274). 30000 ~= 2x that max. It won't trip today (max_rounds=5 already caps per-Q tokens
+  # ~15k) — it's the defense-in-depth backstop for what rounds DON'T bound: a batched round fanning
+  # out many searches, a raised max_rounds, or scratchpad bloat. RE-DERIVE if max_rounds changes.
+  spend_cap_tokens: 30000
+
 embedding:
   model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder lost its A/B (DD-026)
 

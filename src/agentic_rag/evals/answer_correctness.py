@@ -338,6 +338,8 @@ def aggregate_trajectory(results: List[QAResult]) -> Optional[dict]:
     total_rounds = 0
     total_errors = 0
     total_redundant = 0
+    ungrounded_answers = 0            # OUTPUT-ring guardrail: answers with a fabricated citation
+    ungrounded_citations: dict = {}   # offending filename -> how many answers cited it ungrounded
     for t in trajectories:
         total_rounds += t.rounds_used
         total_errors += t.tool_errors
@@ -345,13 +347,19 @@ def aggregate_trajectory(results: List[QAResult]) -> Optional[dict]:
         exit_reasons[t.exit_reason] = exit_reasons.get(t.exit_reason, 0) + 1
         for name, count in t.tool_calls.items():
             tool_calls[name] = tool_calls.get(name, 0) + count
+        if not t.grounded:
+            ungrounded_answers += 1
+            for source in t.ungrounded_citations:
+                ungrounded_citations[source] = ungrounded_citations.get(source, 0) + 1
     return {
         "questions": n,
         "avg_rounds": total_rounds / n,
         "tool_calls": tool_calls,         # total invocations per tool across the run
-        "exit_reasons": exit_reasons,     # how runs ended: finish / budget / oscillation
+        "exit_reasons": exit_reasons,     # how runs ended: finish / budget / oscillation / spend_cap
         "tool_errors": total_errors,      # controller actions that failed to parse/validate
         "redundant_searches": total_redundant,
+        "ungrounded_answers": ungrounded_answers,       # Module-5 output-ring guardrail (flag-only)
+        "ungrounded_citations": ungrounded_citations,
     }
 
 

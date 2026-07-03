@@ -357,10 +357,26 @@ def report(results: List[AgenticResult], config: dict) -> dict:
     logger.info(f"  latency (wall-clock s): controller {ctrl_total.latency_s:.1f} | generator {gen_total.latency_s:.1f} "
                 f"| system ~{system_latency / n:.2f}/Q | judge {judge_total.latency_s:.1f} [instrument]")
     traj_aggregate = aggregate_trajectory(results)   # reused; reads r.trajectory
+    guardrails = None
     if traj_aggregate is not None:
         logger.info(f"  trajectory totals: ~{traj_aggregate['avg_rounds']:.1f} round(s)/Q | "
                     f"tool calls {traj_aggregate['tool_calls']} | exits {traj_aggregate['exit_reasons']} | "
                     f"tool_errors {traj_aggregate['tool_errors']} | redundant {traj_aggregate['redundant_searches']}")
+        # GUARDRAILS (Module 5, Safety ring) — both flag-first, so this line should read all-clear on
+        # the champion: every answer grounded, zero spend_cap exits. A non-zero here is the signal.
+        traj_n = traj_aggregate["questions"]
+        ungrounded = traj_aggregate["ungrounded_answers"]
+        spend_cap_exits = traj_aggregate["exit_reasons"].get("spend_cap", 0)
+        guardrails = {
+            "grounded_answers": traj_n - ungrounded,
+            "questions": traj_n,
+            "ungrounded_answers": ungrounded,
+            "ungrounded_citations": traj_aggregate["ungrounded_citations"],
+            "spend_cap_exits": spend_cap_exits,
+        }
+        detail = f" (fabricated: {traj_aggregate['ungrounded_citations']})" if ungrounded else ""
+        logger.info(f"  guardrails: grounding {traj_n - ungrounded}/{traj_n} answers grounded{detail} "
+                    f"| spend_cap exits {spend_cap_exits}")
 
     return {
         "generator_model": generator_model,
@@ -397,6 +413,7 @@ def report(results: List[AgenticResult], config: dict) -> dict:
             "system_per_q": round((ctrl_total.latency_s + gen_total.latency_s) / n, 3),
             "judge": round(judge_total.latency_s, 2),
         },
+        "guardrails": guardrails,        # Safety ring (Module 5) — grounding flags + spend_cap exits; None on naive
     }
 
 

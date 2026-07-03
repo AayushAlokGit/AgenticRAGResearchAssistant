@@ -37,10 +37,15 @@ class Trajectory:
     the answer-correctness rung alone, visible here. The naive path leaves this None.
     """
     rounds_used: int = 0
-    exit_reason: str = ""             # finish | budget | oscillation
+    exit_reason: str = ""             # finish | budget | oscillation | spend_cap
     tool_calls: dict = field(default_factory=dict)  # tool name -> times invoked
     tool_errors: int = 0             # actions that failed to parse/validate before dispatch
     redundant_searches: int = 0      # searches that added no new evidence (spinning)
+    # OUTPUT-ring guardrail (Module 5, flag-only): did the answer cite only sources it was actually
+    # given? `grounded` false + the offending filenames means a fabricated citation. Recorded, not
+    # enforced — a diagnostic the eval reads; the answer is returned unchanged either way.
+    grounded: bool = True
+    ungrounded_citations: List[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -49,6 +54,8 @@ class Trajectory:
             "tool_calls": dict(self.tool_calls),
             "tool_errors": self.tool_errors,
             "redundant_searches": self.redundant_searches,
+            "grounded": self.grounded,
+            "ungrounded_citations": list(self.ungrounded_citations),
         }
 
 
@@ -90,15 +97,13 @@ def generate_answer(question: str, retriever, llm, system_prompt: str, top_k: in
     Split out so a caller answering many questions (e.g. the answer-quality eval) can build
     the retriever + LLM once and reuse them, instead of reloading the embedder per question.
     """
-    # 1. Retrieve the top_k chunks.
     hits = retriever.query(question, top_k)
 
-    # 2. Assemble the two-message prompt: versioned instructions as the system message,
-    #    and the dynamic context + question wrapped in code as the user message.
+    # Assemble the two-message prompt: versioned instructions as the system message, and the
+    # dynamic context + question wrapped in code as the user message.
     context = assemble_context(hits)
     user_message = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
 
-    # 3. Generate.
     completion = llm.complete([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
