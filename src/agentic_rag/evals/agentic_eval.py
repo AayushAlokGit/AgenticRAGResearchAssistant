@@ -146,7 +146,7 @@ def describe(r: AgenticResult) -> str:
 
 def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_AGENTIC_DATASET,
         ids: Optional[List[str]] = None, run_faithfulness: bool = True,
-        cache_enabled: Optional[bool] = None) -> dict:
+        cache_enabled: Optional[bool] = None, use_graph: bool = False) -> dict:
     config = load_config()
     version = eval_dataset_version(dataset)
 
@@ -158,7 +158,15 @@ def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_A
     generator_llm = build_llm(config, role="generator", cache_enabled=cache_enabled)
     controller_llm = build_llm(config, role="controller", cache_enabled=cache_enabled)
     judge_llm = build_llm(config, role="judge", cache_enabled=cache_enabled)
-    answerer = build_answerer(config, retriever, generator_llm, controller_llm=controller_llm)
+    # A/B the two agent implementations through the SAME scoring: the hand-rolled loop (champion)
+    # vs the LangGraph port (capstone). Both expose `.answer(q) -> AnswerResult`.
+    if use_graph:
+        from agentic_rag.agent.graph import build_graph_answerer
+        answerer = build_graph_answerer(config, retriever, generator_llm, controller_llm)
+        logger.info("agent implementation: LangGraph (agent/graph.py)")
+    else:
+        answerer = build_answerer(config, retriever, generator_llm, controller_llm=controller_llm)
+        logger.info("agent implementation: hand-rolled loop (agent/loop.py)")
     judge_prompt = load_prompt(config, "judge_correctness")
     faith_prompt = load_prompt(config, "judge_faithfulness")   # reuses the SAME judge_llm (judge role)
 
@@ -595,12 +603,15 @@ def main() -> None:
     parser.add_argument("--no-cache", action="store_true",
                         help="Force the LLM response cache OFF (overrides config.cache.enabled) — "
                              "the cold, uncached A/B control for measuring the cache's effect.")
+    parser.add_argument("--graph", action="store_true",
+                        help="Use the LangGraph agent (agent/graph.py) instead of the hand-rolled "
+                             "loop — the capstone parity A/B.")
     args = parser.parse_args()
     ids = [token.strip() for token in args.ids.split(",")] if args.ids else None
     configure_run_logging("evals/agentic")
     run(save=not args.no_save, limit=args.limit, dataset=args.dataset, ids=ids,
         run_faithfulness=not args.no_faithfulness,
-        cache_enabled=False if args.no_cache else None)
+        cache_enabled=False if args.no_cache else None, use_graph=args.graph)
 
 
 if __name__ == "__main__":

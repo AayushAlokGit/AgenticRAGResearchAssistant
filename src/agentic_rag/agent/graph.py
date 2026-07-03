@@ -26,6 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from agentic_rag.agent.loop import (OSCILLATION_PATIENCE, AgentStep, Decision, Scratchpad,
                                     answer_from_evidence, decide_next_action, provenance_label)
 from agentic_rag.agent.tools import ToolContext
+from agentic_rag.harness.guardrails import check_citation_grounding
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.vector_store import Hit
 
@@ -78,10 +79,12 @@ class AgentState(TypedDict):
     seeded_on_empty: bool                                # empty-finish guard has fired (fires at most once)
     consecutive_redundant: int                           # redundant rounds IN A ROW (overwrite; resets on progress)
     redundant_searches: Annotated[int, operator.add]     # cumulative redundant rounds (trajectory)
-    # Deferred to later steps (added when we port each feature, to keep this readable):
-    #   consecutive_redundant / seeded_on_empty  -> oscillation + empty-finish guards (step 5)
-    #   recalled                                 -> episodic memory hint (memory step)
-    #   grounded / ungrounded_citations          -> output-ring guardrail (guardrail step)
+    # Set once by the answer node — what the AnswerResult adapter needs beyond `answer`:
+    retrieved: list                                      # the trimmed+ordered window the generator saw
+    generator_usage: Usage                               # the answer call's token/latency cost
+    grounded: bool                                       # output-ring guardrail: no fabricated citations
+    ungrounded_citations: list
+    # Deferred: recalled -> episodic memory hint (memory step)
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────────────
@@ -188,11 +191,20 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
         return update
 
     def answer_node(state: AgentState) -> dict:
-        """ANSWER — write the cited answer from the gathered evidence. Twin of answer_from_evidence."""
+        """ANSWER — write the cited answer + run the output-ring grounding guard. Twin of the tail of
+        run_agent: answer_from_evidence, then check_citation_grounding (flag-only). Captures the
+        generator cost + trimmed window the adapter needs to build an AnswerResult for the eval."""
         scratchpad = Scratchpad(hits=list(state["evidence"]))
         result = answer_from_evidence(state["question"], scratchpad, retriever, generator_llm,
                                       answer_prompt, top_k, answer_char_budget, ordering)
-        return {"answer": result.answer}
+        grounding = check_citation_grounding(result.answer, result.retrieved)
+        return {
+            "answer": result.answer,
+            "retrieved": result.retrieved,
+            "generator_usage": result.generator_usage,
+            "grounded": grounding.is_grounded,
+            "ungrounded_citations": sorted(grounding.ungrounded),
+        }
 
     return controller_node, tools_node, answer_node
 
@@ -218,6 +230,10 @@ def initial_state(question: str) -> AgentState:
         "seeded_on_empty": False,
         "consecutive_redundant": 0,
         "redundant_searches": 0,
+        "retrieved": [],
+        "generator_usage": Usage(),
+        "grounded": True,
+        "ungrounded_citations": [],
     }
 
 
@@ -253,6 +269,60 @@ def build_graph(retriever, controller_llm, generator_llm, registry, store,
                                   {"controller": "controller", "answer": "answer"})
     builder.add_edge("answer", END)
     return builder.compile()
+
+
+# ── Adapter: make the graph answer like run_agent, so the eval can A/B it ────────────────
+# The eval scores an object with `.answer(question) -> AnswerResult`. GraphAnswerer invokes the
+# compiled graph and repackages its final state into that exact shape, so agentic_eval scores the
+# graph identically to the hand-rolled Answerer (same judge, faithfulness, partial-credit).
+
+class GraphAnswerer:
+    """Drop-in for loop.Answerer, backed by the LangGraph agent."""
+
+    def __init__(self, graph, max_rounds: int):
+        self.graph = graph
+        self.recursion_limit = max_rounds * 2 + 5  # framework backstop above our own budget
+
+    def answer(self, question: str):
+        from agentic_rag.rag.answer import AnswerResult, Trajectory
+        final = self.graph.invoke(initial_state(question),
+                                  config={"recursion_limit": self.recursion_limit})
+        trajectory = Trajectory(
+            rounds_used=final["rounds"],
+            exit_reason=final["exit_reason"],
+            tool_calls=final["tool_calls"],
+            tool_errors=0,                       # not tracked in the graph yet (deferred)
+            redundant_searches=final["redundant_searches"],
+            grounded=final["grounded"],
+            ungrounded_citations=final["ungrounded_citations"],
+        )
+        return AnswerResult(
+            question=question,
+            answer=final["answer"],
+            retrieved=final["retrieved"],
+            controller_usage=final["controller_usage"],
+            generator_usage=final["generator_usage"],
+            trajectory=trajectory,
+        )
+
+
+def build_graph_answerer(config: dict, retriever, generator_llm, controller_llm):
+    """Assemble deps from config (mirrors loop.build_answerer) and compile a GraphAnswerer."""
+    from agentic_rag.agent.loop import build_agent_deps
+    from agentic_rag.agent.tools import DEFAULT_TOOLS
+    from agentic_rag.rag.answer import load_prompt
+
+    react_prompt = load_prompt(config, "agent_react")
+    answer_prompt = load_prompt(config, "answer_with_citations")
+    top_k = config["retrieval"]["top_k"]
+    agent_cfg = config.get("agent", {})
+    max_rounds = agent_cfg.get("max_rounds", 3)
+    answer_char_budget = agent_cfg.get("answer_char_budget", 10000)
+    registry, store = build_agent_deps(config, agent_cfg.get("tools", DEFAULT_TOOLS))
+    ordering = config.get("context", {}).get("ordering", "arrival")
+    graph = build_graph(retriever, controller_llm, generator_llm, registry, store,
+                        react_prompt, answer_prompt, top_k, max_rounds, answer_char_budget, ordering)
+    return GraphAnswerer(graph, max_rounds)
 
 
 # ── Manual single-question run (the LangGraph twin of loop.py's main) ────────────────────
