@@ -18,6 +18,14 @@ llm:
   max_retries: 5 # provider-level backoff before the router falls through to the next tier
   timeout: 30.0 # seconds per request
 
+cache:
+  # Module 5 (harness): memoize deterministic LLM completions. The key is content-addressed
+  # (provider + model + temperature + max_tokens + the exact messages), so a prompt/model/param
+  # change auto-misses — invalidation is free. Cross-run reuse makes eval RE-runs near-free.
+  # Safe (lossless) only at temperature 0; build_llm gates it OFF automatically if temp != 0.
+  enabled: true
+  path: ./chromadb_data/llm_cache.sqlite # persistent, gitignored (under chromadb_data/)
+
 embedding:
   model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder lost its A/B (DD-026)
 

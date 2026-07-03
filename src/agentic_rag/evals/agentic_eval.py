@@ -145,17 +145,19 @@ def describe(r: AgenticResult) -> str:
 # ───────────────────────────── the run ─────────────────────────────
 
 def run(save: bool = True, limit: Optional[int] = None, dataset: str = DEFAULT_AGENTIC_DATASET,
-        ids: Optional[List[str]] = None, run_faithfulness: bool = True) -> dict:
+        ids: Optional[List[str]] = None, run_faithfulness: bool = True,
+        cache_enabled: Optional[bool] = None) -> dict:
     config = load_config()
     version = eval_dataset_version(dataset)
 
     # Same build-once pattern as answer_correctness: expensive deps constructed once and
     # reused. controller (routing brain) + generator (answer writer) may be different models
     # (DD-025); judge is a different family (no self-eval bias, separate token bucket).
+    # cache_enabled=None follows config.cache.enabled; False forces the cold, uncached A/B control.
     retriever = build_retriever(config)
-    generator_llm = build_llm(config, role="generator")
-    controller_llm = build_llm(config, role="controller")
-    judge_llm = build_llm(config, role="judge")
+    generator_llm = build_llm(config, role="generator", cache_enabled=cache_enabled)
+    controller_llm = build_llm(config, role="controller", cache_enabled=cache_enabled)
+    judge_llm = build_llm(config, role="judge", cache_enabled=cache_enabled)
     answerer = build_answerer(config, retriever, generator_llm, controller_llm=controller_llm)
     judge_prompt = load_prompt(config, "judge_correctness")
     faith_prompt = load_prompt(config, "judge_faithfulness")   # reuses the SAME judge_llm (judge role)
@@ -346,6 +348,14 @@ def report(results: List[AgenticResult], config: dict) -> dict:
     logger.info(f"\n  cost (tokens): controller {ctrl_total.total_tokens} in {ctrl_total.calls} call(s) "
                 f"(~{ctrl_total.calls / n:.1f}/Q) | generator {gen_total.total_tokens} in {gen_total.calls} call(s) "
                 f"| judge {judge_total.total_tokens} [instrument]")
+    # LATENCY (wall-clock) — the operational meter the cache moves most. A warm cache re-run drops
+    # this toward ~0 (hits are lookups, not API calls), so it's the number that makes caching visible.
+    # Production latency = controller + generator (judge is instrument-only); reported per-Q so it
+    # reads as an A/B gauge. NOTE: sums per-call time, so it reflects SERIAL wall-clock (our eval is
+    # sequential); it would overcount if calls ran concurrently.
+    system_latency = ctrl_total.latency_s + gen_total.latency_s
+    logger.info(f"  latency (wall-clock s): controller {ctrl_total.latency_s:.1f} | generator {gen_total.latency_s:.1f} "
+                f"| system ~{system_latency / n:.2f}/Q | judge {judge_total.latency_s:.1f} [instrument]")
     traj_aggregate = aggregate_trajectory(results)   # reused; reads r.trajectory
     if traj_aggregate is not None:
         logger.info(f"  trajectory totals: ~{traj_aggregate['avg_rounds']:.1f} round(s)/Q | "
@@ -381,6 +391,12 @@ def report(results: List[AgenticResult], config: dict) -> dict:
         "by_capability": per_capability,
         "trajectory_totals": traj_aggregate,
         "context_cost": context_cost,    # the silent context-engineering axis (structural + billed)
+        "latency_s": {                   # operational meter (Module 5) — the cache moves this most
+            "controller": round(ctrl_total.latency_s, 2),
+            "generator": round(gen_total.latency_s, 2),
+            "system_per_q": round((ctrl_total.latency_s + gen_total.latency_s) / n, 3),
+            "judge": round(judge_total.latency_s, 2),
+        },
     }
 
 
@@ -559,11 +575,15 @@ def main() -> None:
     parser.add_argument("--no-save", action="store_true", help="Don't write a JSON run record.")
     parser.add_argument("--no-faithfulness", action="store_true",
                         help="Skip the faithfulness judge call (cheaper; outcome + trajectory only).")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Force the LLM response cache OFF (overrides config.cache.enabled) — "
+                             "the cold, uncached A/B control for measuring the cache's effect.")
     args = parser.parse_args()
     ids = [token.strip() for token in args.ids.split(",")] if args.ids else None
     configure_run_logging("evals/agentic")
     run(save=not args.no_save, limit=args.limit, dataset=args.dataset, ids=ids,
-        run_faithfulness=not args.no_faithfulness)
+        run_faithfulness=not args.no_faithfulness,
+        cache_enabled=False if args.no_cache else None)
 
 
 if __name__ == "__main__":

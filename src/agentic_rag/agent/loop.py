@@ -662,6 +662,9 @@ def main() -> None:
     parser.add_argument("--memory", action="store_true",
                         help="Force episodic memory ON for this run (overrides config.memory.enabled). "
                              "Recall+write use the persistent store at config.memory.path.")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Force the LLM response cache OFF for this run (overrides "
+                             "config.cache.enabled) — the cold, uncached A/B control.")
     args = parser.parse_args()
 
     from agentic_rag.config import load_config, resolve_path
@@ -674,8 +677,9 @@ def main() -> None:
     configure_run_logging("agent/loop")
     config = load_config()
     retriever = build_retriever(config)
-    llm = build_llm(config, role="generator")
-    controller_llm = build_llm(config, role="controller")
+    cache_enabled = False if args.no_cache else None  # None = follow config.cache.enabled
+    llm = build_llm(config, role="generator", cache_enabled=cache_enabled)
+    controller_llm = build_llm(config, role="controller", cache_enabled=cache_enabled)
     react_prompt = load_prompt(config, "agent_react")
     answer_prompt = load_prompt(config, "answer_with_citations")
     top_k = config["retrieval"]["top_k"]

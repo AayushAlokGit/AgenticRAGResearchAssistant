@@ -28,14 +28,17 @@ Message = Dict[str, str]  # {"role": "system"|"user"|"assistant", "content": "..
 
 @dataclass
 class Usage:
-    """Token cost of one or more LLM calls. Provider-neutral counts (tokens, not dollars):
-    a count is comparable across Groq/Gemini, whereas a $ figure needs a price table that
-    drifts. ``calls`` lets us see the cost of agency directly — naive=1 call/question, the
-    agent loop=N. Usages add, so a per-call Usage rolls up into a per-question / per-run total.
+    """Cost of one or more LLM calls. Provider-neutral counts (tokens, not dollars): a count is
+    comparable across Groq/Gemini, whereas a $ figure needs a price table that drifts. ``calls``
+    lets us see the cost of agency directly — naive=1 call/question, the agent loop=N.
+    ``latency_s`` is wall-clock seconds spent in the call(s) — the OTHER operational meter besides
+    tokens, and the one the cache moves most: a cache hit is ~0s. Usages add, so a per-call Usage
+    rolls up into a per-question / per-run total.
     """
     calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    latency_s: float = 0.0
 
     @property
     def total_tokens(self) -> int:
@@ -46,6 +49,7 @@ class Usage:
             calls=self.calls + other.calls,
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
+            latency_s=self.latency_s + other.latency_s,
         )
 
     def as_dict(self) -> dict:
@@ -54,6 +58,7 @@ class Usage:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
+            "latency_s": round(self.latency_s, 3),
         }
 
 
@@ -103,11 +108,12 @@ class GroqProvider:
         if raw_usage is not None:
             usage = Usage(calls=1,
                           prompt_tokens=getattr(raw_usage, "prompt_tokens", 0) or 0,
-                          completion_tokens=getattr(raw_usage, "completion_tokens", 0) or 0)
+                          completion_tokens=getattr(raw_usage, "completion_tokens", 0) or 0,
+                          latency_s=elapsed)
             logger.info("groq completion ok: %.2fs, tokens prompt=%d completion=%d",
                         elapsed, usage.prompt_tokens, usage.completion_tokens)
         else:
-            usage = Usage(calls=1)  # SDK gave no usage; still count the call
+            usage = Usage(calls=1, latency_s=elapsed)  # SDK gave no usage; still count the call
             logger.info("groq completion ok: %.2fs (no usage reported)", elapsed)
         return Completion(text=response.choices[0].message.content or "", usage=usage)
 
@@ -217,11 +223,12 @@ class GeminiProvider:
             # disable/cap thinking, so completion_tokens here is the visible-answer cost.
             usage = Usage(calls=1,
                           prompt_tokens=getattr(raw_usage, "prompt_token_count", 0) or 0,
-                          completion_tokens=getattr(raw_usage, "candidates_token_count", 0) or 0)
+                          completion_tokens=getattr(raw_usage, "candidates_token_count", 0) or 0,
+                          latency_s=elapsed)
             logger.info("gemini completion ok: %.2fs, tokens prompt=%d completion=%d",
                         elapsed, usage.prompt_tokens, usage.completion_tokens)
         else:
-            usage = Usage(calls=1)  # no usage reported; still count the call
+            usage = Usage(calls=1, latency_s=elapsed)  # no usage reported; still count the call
             logger.info("gemini completion ok: %.2fs (no usage reported)", elapsed)
         return Completion(text=response.text or "", usage=usage)
 
@@ -302,12 +309,15 @@ def _build_provider(name: str, model: str, temperature: float, max_tokens: int,
     return None
 
 
-def build_llm(config: dict, role: str | None = None) -> LLMRouter:
+def build_llm(config: dict, role: str | None = None, cache_enabled: bool | None = None) -> LLMRouter:
     """Construct the router from config, reading API keys from the environment (.env).
 
     The role's chosen (provider, model) is the PRIMARY tier; the remaining providers in
     ``provider_order`` (each with their own default model) are fallback tiers. Providers
     whose API key isn't set are skipped, so a missing key just removes that tier.
+
+    ``cache_enabled`` overrides ``config.cache.enabled`` (None = use config). Pass False to
+    force a cold, uncached run — the A/B control for measuring the cache's effect.
     """
     # Load .env so GROQ_API_KEY / GOOGLE_API_KEY are available even when not exported.
     from dotenv import load_dotenv
@@ -319,6 +329,22 @@ def build_llm(config: dict, role: str | None = None) -> LLMRouter:
     max_tokens = llm_cfg["max_tokens"]
     max_retries = llm_cfg.get("max_retries", 5)
     timeout = llm_cfg.get("timeout", 30.0)
+
+    # Build the LLM cache backend (or None). Caching an LLM call is only LOSSLESS when the call
+    # is deterministic, so we gate it to temperature 0 — a temp>0 cache would freeze one random
+    # sample and serve it forever. The gate encodes that precondition rather than trusting config.
+    cache_cfg = config.get("cache", {})
+    if cache_enabled is None:
+        cache_enabled = cache_cfg.get("enabled", False)
+    cache_backend = None
+    if cache_enabled and temperature != 0.0:
+        logger.warning("llm cache requested but temperature=%.2f (non-deterministic) — caching "
+                       "would freeze one sample; DISABLED for safety.", temperature)
+    elif cache_enabled:
+        from agentic_rag.llm.cache import SqliteCache
+        cache_path = resolve_path(cache_cfg.get("path", "./chromadb_data/llm_cache.sqlite"))
+        cache_backend = SqliteCache(cache_path)
+        logger.info("llm cache ON (sqlite at %s)", cache_path)
 
     primary_provider, primary_model = role_provider_model(config, role)
     plan = [(primary_provider, primary_model)]
@@ -332,6 +358,11 @@ def build_llm(config: dict, role: str | None = None) -> LLMRouter:
             continue  # no default model configured for this fallback tier
         provider = _build_provider(provider_name, model, temperature, max_tokens, max_retries, timeout)
         if provider is not None:
+            if cache_backend is not None:
+                # Wrap each tier so the cache key carries that tier's own model — a fallback
+                # answer can never be served as if it came from the primary (see CachedProvider).
+                from agentic_rag.llm.cache import CachedProvider
+                provider = CachedProvider(provider, cache_backend)
             providers.append(provider)
 
     if not providers:
