@@ -181,23 +181,34 @@ def _run_expand_around_chunk(args: ExpandAroundChunkArgs, ctx: ToolContext) -> T
                       hits=hits)
 
 
-def _load_doc_tags(store) -> tuple:
-    """Load the induced tag schema + per-doc tags persisted next to the store (rag/tagging.py).
+def _load_doc_tags(store) -> dict:
+    """Load the per-doc FREE-FORM tags persisted next to the store (rag/tagging.py).
 
     Read straight from the store's persist dir so the tool needs no extra wiring; returns
-    ({source: {axis: value}}, {axis: {...}}) — empty if the corpus hasn't been tagged.
+    {source: {doc_type, topics: [...], entities: [...]}} — empty if the corpus hasn't been tagged.
     """
     import json
     from pathlib import Path
 
     base = Path(getattr(store, "persist_directory", "") or "")
-    tags, schema = {}, {}
-    tags_file, schema_file = base / "doc_tags.json", base / "tag_schema.json"
+    tags_file = base / "doc_tags.json"
     if tags_file.exists():
-        tags = json.loads(tags_file.read_text(encoding="utf-8"))
-    if schema_file.exists():
-        schema = json.loads(schema_file.read_text(encoding="utf-8"))
-    return tags, schema
+        return json.loads(tags_file.read_text(encoding="utf-8"))
+    return {}
+
+
+def _format_doc_tags(tag: dict) -> str:
+    """Render one doc's free-form tags compactly for the corpus map (agent-readable, no fixed vocab)."""
+    if not tag:
+        return "untagged"
+    parts = []
+    if tag.get("doc_type"):
+        parts.append(f"type={tag['doc_type']}")
+    if tag.get("topics"):
+        parts.append("topics: " + ", ".join(tag["topics"]))
+    if tag.get("entities"):
+        parts.append("entities: " + ", ".join(tag["entities"]))
+    return " | ".join(parts) or "untagged"
 
 
 def _run_list_sources(args: NoArgs, ctx: ToolContext) -> ToolResult:
@@ -213,19 +224,14 @@ def _run_list_sources(args: NoArgs, ctx: ToolContext) -> ToolResult:
         source = chunk["source"]
         counts[source] = counts.get(source, 0) + 1
 
-    tags, schema = _load_doc_tags(ctx.store)
+    tags = _load_doc_tags(ctx.store)
     lines = []
     for source in sorted(counts):
-        doc_tags = tags.get(source, {})
-        tag_str = ", ".join(f"{axis}={value}" for axis, value in doc_tags.items()) or "untagged"
-        lines.append(f"  - {source} ({counts[source]} chunk(s)) [{tag_str}]")
+        lines.append(f"  - {source} ({counts[source]} chunk(s)) [{_format_doc_tags(tags.get(source, {}))}]")
 
-    header = "corpus sources"
-    if schema:
-        # A compact legend so the controller knows each axis's allowed values to filter on.
-        legend = "; ".join(f"{axis}: {{{', '.join(spec['values'])}}}" for axis, spec in schema.items())
-        header += f"\n(tags — {legend})"
-    corpus_map = header + ":\n" + "\n".join(lines)
+    # Free-form tags (open vocabulary): the controller READS each doc's type/topics/entities and
+    # judges relevance — there is no fixed legend to filter on (retrieval stays soft, DD-045-style).
+    corpus_map = "corpus sources (with free-form tags):\n" + "\n".join(lines)
 
     # Emit the map BOTH as an observation (for the controller's routing) AND as an evidence hit,
     # so it lands in the scratchpad and the GENERATOR can answer enumeration questions FROM it.

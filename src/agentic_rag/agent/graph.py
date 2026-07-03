@@ -391,7 +391,7 @@ def main() -> None:
     from agentic_rag.logging_setup import configure_run_logging
     from agentic_rag.memory.episodic import EpisodicStore
     from agentic_rag.rag.answer import load_prompt
-    from agentic_rag.rag.embeddings import LocalEmbedder
+    from agentic_rag.rag.embeddings import build_embedder
     from agentic_rag.rag.retriever import build_retriever
 
     load_dotenv()  # loads GROQ/GOOGLE keys AND the LANGSMITH_* vars so the invoke below auto-traces
@@ -414,7 +414,7 @@ def main() -> None:
     memory_store = None
     recall_k = memory_cfg.get("recall_k", 1)
     if args.memory or memory_cfg.get("enabled", False):
-        embedder = LocalEmbedder(config["embedding"]["model"])
+        embedder = build_embedder(config)
         memory_store = EpisodicStore(resolve_path(memory_cfg["path"]), embedder)
         logger.info("agent: episodic memory ON (%d episode(s) in store)", len(memory_store))
 

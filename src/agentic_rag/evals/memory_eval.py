@@ -39,7 +39,7 @@ from agentic_rag.llm.provider import Usage, build_llm, role_model
 from agentic_rag.logging_setup import configure_run_logging
 from agentic_rag.memory.episodic import EpisodicStore
 from agentic_rag.rag.answer import load_prompt
-from agentic_rag.rag.embeddings import LocalEmbedder
+from agentic_rag.rag.embeddings import build_embedder
 from agentic_rag.rag.ingest import ingest
 from agentic_rag.rag.retriever import build_retriever
 
@@ -391,7 +391,7 @@ def build_deps(config: dict) -> Deps:
         ordering=config.get("context", {}).get("ordering", "arrival"),
         recall_k=memory_cfg.get("recall_k", 1),
         memory_path=resolve_path(memory_cfg.get("path", "./chromadb_data/episodic_memory.json")),
-        embedder=LocalEmbedder(config["embedding"]["model"]),
+        embedder=build_embedder(config),
         config=config,
     )
 

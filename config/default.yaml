@@ -39,7 +39,10 @@ guardrails:
   spend_cap_tokens: 30000
 
 embedding:
-  model: sentence-transformers/all-MiniLM-L6-v2 # CPU-friendly baseline; stronger embedder lost its A/B (DD-026)
+  provider: gemini # local | gemini — selects the embedder (build_embedder). local = torch/CPU; gemini = cloud API.
+  model: sentence-transformers/all-MiniLM-L6-v2 # used when provider=local (CPU baseline; stronger local embedder lost its A/B, DD-026)
+  gemini_model: gemini-embedding-001 # used when provider=gemini — GA flagship; native 3072-dim, truncated to `dims` (Matryoshka) + renormalized
+  dims: 768 # gemini output dim = the ChromaDB collection dim; RE-INGEST the store when this or provider changes
 
 retrieval:
   top_k: 5 # chunks per query — 5 is the champion, 8 lost to distractors (DD-017)
