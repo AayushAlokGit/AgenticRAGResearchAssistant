@@ -50,24 +50,6 @@ def cache_key(provider_name: str, model: str, temperature: float, max_tokens: in
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-class InMemoryCache:
-    """Process-lifetime backend: key -> stored completion (text + its token count).
-
-    Swapped for an on-disk backend (step 2) for cross-run reuse; the get/put interface stays
-    the same, so CachedProvider doesn't change. Stores the token count alongside the text so a
-    future hit can report how many tokens it SAVED.
-    """
-
-    def __init__(self):
-        self._store: Dict[str, Dict] = {}
-
-    def get(self, key: str) -> Optional[Dict]:
-        return self._store.get(key)
-
-    def put(self, key: str, text: str, total_tokens: int) -> None:
-        self._store[key] = {"text": text, "total_tokens": total_tokens}
-
-
 class SqliteCache:
     """On-disk backend: a sqlite table key -> (text, total_tokens). Persists ACROSS runs, so an
     eval re-run at temp 0 replays from cache — the real win.

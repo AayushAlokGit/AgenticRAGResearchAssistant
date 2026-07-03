@@ -78,6 +78,24 @@ class LLMError(RuntimeError):
     """Raised when no provider can answer (e.g. all tiers failed, or none configured)."""
 
 
+def _usage_from(name: str, elapsed: float, raw_usage, prompt_tokens: int,
+                completion_tokens: int) -> Usage:
+    """Build the per-call Usage and log the completion, shared by both providers.
+
+    ``raw_usage`` is the provider's usage object (or None if it reported none); the token counts
+    are already pulled from it by the caller (the two SDKs name the fields differently). When it's
+    None we still count the call — one call happened, we just don't know its token cost.
+    """
+    if raw_usage is None:
+        logger.info("%s completion ok: %.2fs (no usage reported)", name, elapsed)
+        return Usage(calls=1, latency_s=elapsed)
+    usage = Usage(calls=1, prompt_tokens=prompt_tokens or 0,
+                  completion_tokens=completion_tokens or 0, latency_s=elapsed)
+    logger.info("%s completion ok: %.2fs, tokens prompt=%d completion=%d",
+                name, elapsed, usage.prompt_tokens, usage.completion_tokens)
+    return usage
+
+
 class GroqProvider:
     name = "groq"
 
@@ -105,16 +123,9 @@ class GroqProvider:
         )
         elapsed = time.perf_counter() - start
         raw_usage = getattr(response, "usage", None)
-        if raw_usage is not None:
-            usage = Usage(calls=1,
-                          prompt_tokens=getattr(raw_usage, "prompt_tokens", 0) or 0,
-                          completion_tokens=getattr(raw_usage, "completion_tokens", 0) or 0,
-                          latency_s=elapsed)
-            logger.info("groq completion ok: %.2fs, tokens prompt=%d completion=%d",
-                        elapsed, usage.prompt_tokens, usage.completion_tokens)
-        else:
-            usage = Usage(calls=1, latency_s=elapsed)  # SDK gave no usage; still count the call
-            logger.info("groq completion ok: %.2fs (no usage reported)", elapsed)
+        usage = _usage_from(self.name, elapsed, raw_usage,
+                            getattr(raw_usage, "prompt_tokens", 0),
+                            getattr(raw_usage, "completion_tokens", 0))
         return Completion(text=response.choices[0].message.content or "", usage=usage)
 
 
@@ -216,20 +227,13 @@ class GeminiProvider:
                                attempt, self.max_retries, wait, str(exc)[:140])
                 time.sleep(wait)
         elapsed = time.perf_counter() - start
+        # Gemini names the token fields differently: prompt_token_count / candidates_token_count.
+        # The candidates count EXCLUDES thinking tokens (those are thoughts_token_count) — we
+        # disable/cap thinking, so completion_tokens here is the visible-answer cost.
         raw_usage = getattr(response, "usage_metadata", None)
-        if raw_usage is not None:
-            # Gemini names them differently: prompt_token_count / candidates_token_count. The
-            # candidates count EXCLUDES thinking tokens (those are thoughts_token_count) — we
-            # disable/cap thinking, so completion_tokens here is the visible-answer cost.
-            usage = Usage(calls=1,
-                          prompt_tokens=getattr(raw_usage, "prompt_token_count", 0) or 0,
-                          completion_tokens=getattr(raw_usage, "candidates_token_count", 0) or 0,
-                          latency_s=elapsed)
-            logger.info("gemini completion ok: %.2fs, tokens prompt=%d completion=%d",
-                        elapsed, usage.prompt_tokens, usage.completion_tokens)
-        else:
-            usage = Usage(calls=1, latency_s=elapsed)  # no usage reported; still count the call
-            logger.info("gemini completion ok: %.2fs (no usage reported)", elapsed)
+        usage = _usage_from(self.name, elapsed, raw_usage,
+                            getattr(raw_usage, "prompt_token_count", 0),
+                            getattr(raw_usage, "candidates_token_count", 0))
         return Completion(text=response.text or "", usage=usage)
 
 

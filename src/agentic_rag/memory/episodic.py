@@ -85,15 +85,5 @@ class EpisodicStore:
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:k]
 
-    def recall(self, question: str, threshold: float) -> Optional[Tuple[dict, float]]:
-        """Best episode IF it clears the similarity threshold, else None."""
-        top = self.read(question, k=1)
-        if not top:
-            return None
-        episode, similarity = top[0]
-        if similarity >= threshold:
-            return episode, similarity
-        return None
-
     def __len__(self) -> int:
         return len(self.episodes)

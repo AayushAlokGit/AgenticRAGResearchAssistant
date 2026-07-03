@@ -20,6 +20,20 @@ from chromadb.config import Settings
 _COLLECTION_METADATA = {"hnsw:space": "cosine"}  # cosine distance = 1 − cosine similarity
 
 
+def _rows(documents, metadatas):
+    """Zip Chroma's parallel documents/metadatas lists into ``(i, text, meta)`` triples.
+
+    Chroma returns each field as its own list; a missing/short field comes back as ``[]`` or
+    ``None``. Driving off ``metadatas`` and index-guarding ``documents`` tolerates that without
+    the three read paths (query / all_chunks / fetch_source_chunks) each re-rolling the guard.
+    """
+    documents = documents or []
+    metadatas = metadatas or []
+    for i, meta in enumerate(metadatas):
+        text = documents[i] if i < len(documents) else ""
+        yield i, text, (meta or {})
+
+
 @dataclass
 class Hit:
     """One retrieved chunk."""
@@ -73,22 +87,16 @@ class ChromaVectorStore:
             include=["documents", "metadatas", "distances"],
         )
         # ChromaDB nests results one level per query; we issued one query.
-        ids = res.get("ids", [[]])[0]
         docs = res.get("documents", [[]])[0]
         metas = res.get("metadatas", [[]])[0]
         dists = res.get("distances", [[]])[0]
 
         hits: List[Hit] = []
-        for i in range(len(ids)):
-            meta = metas[i] or {}
-            hits.append(
-                Hit(
-                    source=meta.get("source", ""),
-                    chunk_index=meta.get("chunk_index", -1),
-                    text=docs[i] if i < len(docs) else "",
-                    score=1.0 - dists[i] if i < len(dists) else 0.0,
-                )
-            )
+        for i, text, meta in _rows(docs, metas):
+            score = 1.0 - dists[i] if i < len(dists) else 0.0
+            hits.append(Hit(source=meta.get("source", ""),
+                            chunk_index=meta.get("chunk_index", -1),
+                            text=text, score=score))
         return hits
 
     def count(self) -> int:
@@ -101,17 +109,12 @@ class ChromaVectorStore:
         memory. Cheap at our scale (hundreds of chunks); would need batching at millions.
         """
         got = self.collection.get(include=["documents", "metadatas"])
-        ids = got.get("ids", [])
-        documents = got.get("documents", [])
-        metadatas = got.get("metadatas", [])
-
         chunks = []
-        for i in range(len(ids)):
-            meta = metadatas[i] or {}
+        for _, text, meta in _rows(got.get("documents", []), got.get("metadatas", [])):
             chunks.append({
                 "source": meta.get("source", ""),
                 "chunk_index": meta.get("chunk_index", -1),
-                "text": documents[i] if i < len(documents) else "",
+                "text": text,
             })
         return chunks
 
@@ -123,13 +126,9 @@ class ChromaVectorStore:
         is cheap (and avoids guessing which neighbour ids exist).
         """
         got = self.collection.get(where={"source": source}, include=["documents", "metadatas"])
-        documents = got.get("documents", [])
-        metadatas = got.get("metadatas", [])
-
         by_index = {}
-        for i in range(len(documents)):
-            meta = metadatas[i] or {}
-            by_index[meta.get("chunk_index", -1)] = documents[i]
+        for _, text, meta in _rows(got.get("documents", []), got.get("metadatas", [])):
+            by_index[meta.get("chunk_index", -1)] = text
         return by_index
 
     def reset(self) -> None:
