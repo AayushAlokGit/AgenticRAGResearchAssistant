@@ -16,19 +16,64 @@ import type {
   ThinkEvent,
 } from "@/lib/types";
 
-// The two presets the Compare view runs side by side — the eval knob-ladder made interactive.
-const COMPARE_PRESETS: { title: string; subtitle: string; knobs: Knobs }[] = [
-  {
-    title: "Basic RAG",
-    subtitle: "dense · single-shot",
-    knobs: { mode: "dense", rerank: false, parent_expansion: false, max_rounds: 1 },
-  },
-  {
-    title: "Full System",
-    subtitle: "hybrid + rerank + parent-expansion + agentic loop",
-    knobs: { mode: "hybrid", rerank: true, parent_expansion: true },
-  },
+// ── Retrieval-pipeline knobs — the project's first-class idea: toggle a technique, watch behavior
+// change. These are RETRIEVAL-TIME (live per request). Index-time knobs (chunk size, embedding dims)
+// are baked at ingest and shown read-only via <IndexSettings>.
+type KnobConfig = {
+  hybrid: boolean; // hybrid (dense + BM25) vs dense-only
+  rerank: boolean; // cross-encoder rerank
+  parent: boolean; // parent-child expansion
+  agentic: boolean; // multi-round agentic loop vs single-shot
+  topK: number; // chunks fed to the generator
+};
+
+const FULL_CONFIG: KnobConfig = { hybrid: true, rerank: true, parent: true, agentic: true, topK: 5 };
+
+// The eval knob-ladder (README's headline table) as snap-to presets — dense → … → full.
+const LADDER: { label: string; config: KnobConfig }[] = [
+  { label: "Naive", config: { hybrid: false, rerank: false, parent: false, agentic: false, topK: 5 } },
+  { label: "+ Hybrid", config: { hybrid: true, rerank: false, parent: false, agentic: false, topK: 5 } },
+  { label: "+ Rerank", config: { hybrid: true, rerank: true, parent: false, agentic: false, topK: 5 } },
+  { label: "+ Parent-child", config: { hybrid: true, rerank: true, parent: true, agentic: false, topK: 5 } },
+  { label: "Full (agentic)", config: FULL_CONFIG },
 ];
+
+const KNOB_TOGGLES: { key: "hybrid" | "rerank" | "parent" | "agentic"; label: string; desc: string }[] = [
+  { key: "hybrid", label: "Hybrid retrieval", desc: "dense + BM25 keyword, fused with RRF" },
+  { key: "rerank", label: "Cross-encoder rerank", desc: "re-score candidates for precision" },
+  { key: "parent", label: "Parent-child expansion", desc: "add each hit's neighbouring chunks (±2 window)" },
+  { key: "agentic", label: "Agentic loop", desc: "multi-round reason→retrieve (vs single-shot)" },
+];
+
+function toKnobs(k: KnobConfig): Knobs {
+  return {
+    mode: k.hybrid ? "hybrid" : "dense",
+    rerank: k.rerank,
+    parent_expansion: k.parent,
+    max_rounds: k.agentic ? undefined : 1, // single-shot when the agentic loop is off
+    top_k: k.topK,
+  };
+}
+
+function knobChips(k: KnobConfig): string[] {
+  const chips = [k.hybrid ? "hybrid" : "dense"];
+  if (k.rerank) chips.push("rerank");
+  if (k.parent) chips.push("parent-child");
+  chips.push(k.agentic ? "agentic" : "single-shot");
+  chips.push(`k=${k.topK}`);
+  return chips;
+}
+
+function sameConfig(a: KnobConfig, b: KnobConfig): boolean {
+  return (
+    a.hybrid === b.hybrid && a.rerank === b.rerank && a.parent === b.parent &&
+    a.agentic === b.agentic && a.topK === b.topK
+  );
+}
+
+function configName(c: KnobConfig): string {
+  return LADDER.find((p) => sameConfig(p.config, c))?.label ?? "Custom config";
+}
 
 const EXAMPLES = [
   "What embedding model does the system use and why is it kept local?",
@@ -96,11 +141,6 @@ function Hero() {
         Ask a multi-hop question about the corpus. Watch the agent{" "}
         <span className="text-zinc-200">reason → retrieve → re-retrieve</span>, cite its sources, and
         count every token in real time.
-      </p>
-      <p className="mt-3 text-xs text-zinc-500">
-        Measured, not vibes:{" "}
-        <span className="text-zinc-300">+24 pts answer accuracy</span> from the retrieval architecture
-        (0.53 → 0.77) and faithfulness 0.89 → 0.97 on the eval set — every technique earned its place.
       </p>
       <div className="mt-4 flex flex-wrap items-center gap-3 text-xs">
         <a
@@ -378,20 +418,31 @@ function RunView({
   run,
   onOpenSource,
   title,
-  subtitle,
+  knobs,
 }: {
   run: RunState;
   onOpenSource: (s: string) => void;
   title?: string;
-  subtitle?: string;
+  knobs?: KnobConfig; // the retrieval knobs this run used — shown as chips so every run is labelled
 }) {
   const { rounds, answer, done, error, running } = run;
   return (
     <div>
-      {title && (
-        <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b border-zinc-800 pb-2">
-          <h3 className="text-sm font-semibold text-zinc-100">{title}</h3>
-          {subtitle && <span className="text-[11px] text-zinc-500">{subtitle}</span>}
+      {(title || knobs) && (
+        <div className="mb-3 border-b border-zinc-800 pb-2">
+          {title && <h3 className="text-sm font-semibold text-zinc-100">{title}</h3>}
+          {knobs && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {knobChips(knobs).map((c) => (
+                <span
+                  key={c}
+                  className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400"
+                >
+                  {c}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -494,6 +545,105 @@ function RunView({
   );
 }
 
+// The first-class knob panel: toggle retrieval techniques + top_k, snap to eval-ladder presets.
+function KnobPanel({
+  config,
+  onChange,
+}: {
+  config: KnobConfig;
+  onChange: (c: KnobConfig) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Retrieval pipeline
+        </span>
+        <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+          top_k
+          <select
+            value={config.topK}
+            onChange={(e) => onChange({ ...config, topK: Number(e.target.value) })}
+            className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-200 outline-none"
+          >
+            {[3, 5, 8].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {KNOB_TOGGLES.map((t) => {
+          const on = config[t.key];
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => onChange({ ...config, [t.key]: !on })}
+              title={t.desc}
+              className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                on
+                  ? "border-sky-500/50 bg-sky-500/15 text-sky-200"
+                  : "border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {on ? "✓ " : ""}
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="text-zinc-600">presets:</span>
+        {LADDER.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            onClick={() => onChange(p.config)}
+            className={`rounded border px-2 py-0.5 transition-colors ${
+              sameConfig(p.config, config)
+                ? "border-zinc-600 bg-zinc-800 text-zinc-200"
+                : "border-zinc-800 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {/* legend: a one-line definition of each knob */}
+      <dl className="mt-2 grid gap-x-5 gap-y-1 border-t border-zinc-800 pt-2 text-[11px] text-zinc-500 sm:grid-cols-2">
+        {KNOB_TOGGLES.map((t) => (
+          <div key={t.key}>
+            <span className="text-zinc-400">{t.label}</span> — {t.desc}
+          </div>
+        ))}
+        <div>
+          <span className="text-zinc-400">top_k</span> — how many retrieved chunks are fed to the generator
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+// Read-only readout of the index-time knobs (baked at ingest; the honest "these exist but re-index to change").
+function IndexSettings({ config }: { config: ConfigInfo }) {
+  if (!config.chunk_size) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+      <span className="text-zinc-600">index-time (set at ingest):</span>
+      <Badge>
+        chunk {config.chunk_size}/{config.chunk_overlap} · {config.chunking_strategy}
+      </Badge>
+      <Badge>
+        {config.embedding_model} · {config.embedding_dims}d
+      </Badge>
+      <span className="text-zinc-600">— re-index to change</span>
+    </div>
+  );
+}
+
 // ── page ───────────────────────────────────────────────────────────────────────────────────
 export default function Home() {
   const [config, setConfig] = useState<ConfigInfo | null>(null);
@@ -511,6 +661,10 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [compareRuns, setCompareRuns] = useState<[RunState, RunState] | null>(null);
+  const [knobConfig, setKnobConfig] = useState<KnobConfig>(FULL_CONFIG); // the active retrieval config
+  const [singleKnobs, setSingleKnobs] = useState<KnobConfig | null>(null); // snapshot shown on the single run
+  const [compareB, setCompareB] = useState<KnobConfig>(LADDER[0].config); // the config to compare against (default Naive)
+  const [compareConfigs, setCompareConfigs] = useState<[KnobConfig, KnobConfig] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const compareAbortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -541,6 +695,7 @@ export default function Home() {
     const query = q.trim();
     if (!query || running || status !== "ready") return;
     setCompareRuns(null); // leave compare mode when running a single ask
+    setSingleKnobs(knobConfig); // snapshot the config this run uses, for the RunView label
     setRunning(true);
     setRounds([]);
     setAnswer(null);
@@ -559,23 +714,26 @@ export default function Home() {
           else if (e.type === "error") setError(e.message);
         },
         controller.signal,
-        { scope },
+        { scope, knobs: toKnobs(knobConfig) },
       );
     } catch (err) {
       if ((err as Error).name !== "AbortError") setError(String(err));
     } finally {
       setRunning(false);
     }
-  }, [running, status, scope]);
+  }, [running, status, scope, knobConfig]);
 
-  // Run the SAME question under both presets in parallel — the visible "Basic vs Full System" proof.
+  // Run the SAME question under two knob configs in parallel — the core "toggle a knob, watch behavior
+  // change" proof. Config A = the active knob panel; config B = the compare-against selection.
   const runCompare = useCallback(async (q: string) => {
     const query = q.trim();
     if (!query || running || status !== "ready") return;
+    const configs: [KnobConfig, KnobConfig] = [knobConfig, compareB];
     setRounds([]);
     setAnswer(null);
     setDone(null);
     setError(null);
+    setCompareConfigs(configs);
     setCompareRuns([{ ...EMPTY_RUN, running: true }, { ...EMPTY_RUN, running: true }]);
     const controller = new AbortController();
     compareAbortRef.current = controller;
@@ -599,7 +757,7 @@ export default function Home() {
       });
 
     const stream = (idx: 0 | 1) =>
-      askStream(query, onEvent(idx), controller.signal, { scope, knobs: COMPARE_PRESETS[idx].knobs })
+      askStream(query, onEvent(idx), controller.signal, { scope, knobs: toKnobs(configs[idx]) })
         .catch((err) => {
           if ((err as Error).name !== "AbortError")
             update(idx, (rs) => ({ ...rs, error: String(err) }));
@@ -607,7 +765,7 @@ export default function Home() {
         .finally(() => update(idx, (rs) => ({ ...rs, running: false })));
 
     await Promise.all([stream(0), stream(1)]);
-  }, [running, status, scope]);
+  }, [running, status, scope, knobConfig, compareB]);
 
   const compareRunning = !!compareRuns && compareRuns.some((r) => r.running);
 
@@ -771,18 +929,26 @@ export default function Home() {
           {/* hero (idle only — collapses once a query runs) */}
           {!running && rounds.length === 0 && !answer && <Hero />}
 
-          {/* config strip */}
+          {/* config strip + read-only index-time settings */}
           {config && (
-            <div className="flex flex-wrap items-center gap-1.5 py-3">
-              <Badge className="text-emerald-400">
-                <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" /> live
-              </Badge>
-              <Badge>model: {config.controller_model}</Badge>
-              <Badge>store: {config.store_provider}</Badge>
-              <Badge>max_rounds: {config.max_rounds}</Badge>
-              <Badge>top_k: {config.top_k}</Badge>
-              <Badge>tools: {config.tools.join(", ")}</Badge>
-              {totalChunks > 0 && <Badge>{sources.length} docs · {totalChunks} chunks</Badge>}
+            <div className="py-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge className="text-emerald-400">
+                  <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" /> live
+                </Badge>
+                <Badge>model: {config.controller_model}</Badge>
+                <Badge>store: {config.store_provider}</Badge>
+                <Badge>tools: {config.tools.join(", ")}</Badge>
+                {totalChunks > 0 && <Badge>{sources.length} docs · {totalChunks} chunks</Badge>}
+              </div>
+              <IndexSettings config={config} />
+            </div>
+          )}
+
+          {/* KNOB PANEL — the first-class idea: tune the retrieval pipeline, watch behavior change */}
+          {status === "ready" && (
+            <div className="mb-3">
+              <KnobPanel config={knobConfig} onChange={setKnobConfig} />
             </div>
           )}
 
@@ -861,51 +1027,66 @@ export default function Home() {
           </div>
         )}
 
-        {/* Compare: run the same question under Basic vs Full presets, side by side */}
+        {/* Compare: run the same question under the active config (A) vs a chosen config (B) */}
         {!running && (
-          <div className="mt-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             {compareRunning ? (
               <button
                 type="button"
                 onClick={() => compareAbortRef.current?.abort()}
-                className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
               >
                 Stop comparison
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => runCompare(question)}
-                disabled={!question.trim() || status !== "ready"}
-                title="Run the same question with Basic RAG and the Full System, side by side"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:border-sky-600 hover:text-zinc-100 disabled:opacity-40"
-              >
-                ⚡ Compare: Basic RAG vs Full System
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => runCompare(question)}
+                  disabled={!question.trim() || status !== "ready"}
+                  title="Run the same question under your current knobs vs the chosen config, side by side"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-zinc-300 transition-colors hover:border-sky-600 hover:text-zinc-100 disabled:opacity-40"
+                >
+                  ⚡ Compare current knobs
+                </button>
+                <span className="text-zinc-500">vs</span>
+                <select
+                  value={configName(compareB)}
+                  onChange={(e) =>
+                    setCompareB(LADDER.find((p) => p.label === e.target.value)?.config ?? LADDER[0].config)
+                  }
+                  className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-zinc-300 outline-none"
+                >
+                  {LADDER.map((p) => (
+                    <option key={p.label} value={p.label}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </>
             )}
           </div>
         )}
       </div>
 
-      {/* results: single run, or the Basic-vs-Full compare (two columns) */}
-      {compareRuns ? (
+      {/* results: single run, or the two-config compare (side by side, each labelled with its knobs) */}
+      {compareRuns && compareConfigs ? (
         <div className="mb-10 mt-6">
           <p className="mb-3 text-xs text-zinc-500">
-            Same question, two pipelines — <span className="text-zinc-300">Basic RAG</span> vs the{" "}
-            <span className="text-zinc-300">Full System</span>. Watch how the retrieval stack changes the answer.
+            Same question, two knob configs — watch how the retrieval pipeline changes the trajectory and answer.
           </p>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
             <RunView
               run={compareRuns[0]}
               onOpenSource={setSelectedSource}
-              title={COMPARE_PRESETS[0].title}
-              subtitle={COMPARE_PRESETS[0].subtitle}
+              title={configName(compareConfigs[0])}
+              knobs={compareConfigs[0]}
             />
             <RunView
               run={compareRuns[1]}
               onOpenSource={setSelectedSource}
-              title={COMPARE_PRESETS[1].title}
-              subtitle={COMPARE_PRESETS[1].subtitle}
+              title={configName(compareConfigs[1])}
+              knobs={compareConfigs[1]}
             />
           </div>
         </div>
@@ -914,6 +1095,7 @@ export default function Home() {
           <RunView
             run={{ rounds, answer, done, error, running }}
             onOpenSource={setSelectedSource}
+            knobs={rounds.length > 0 || done ? singleKnobs ?? undefined : undefined}
           />
           {answer && (
             <p className="mt-2 text-xs text-zinc-600">

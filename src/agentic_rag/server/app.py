@@ -71,6 +71,11 @@ def health():
 def config():
     deps = app.state.deps
     cfg = deps.config
+    ingestion = cfg.get("ingestion", {})
+    embedding = cfg.get("embedding", {})
+    emb_provider = embedding.get("provider", "local")
+    emb_model = (embedding.get("gemini_model", "gemini-embedding-001") if emb_provider == "gemini"
+                 else embedding.get("model", ""))
     return ConfigResponse(
         max_rounds=deps.max_rounds,
         controller_model=deps.model_names["controller"],
@@ -80,6 +85,12 @@ def config():
         spend_cap_tokens=cfg.get("guardrails", {}).get("spend_cap_tokens", 0),
         store_provider=cfg["vector_store"]["provider"],
         daily_token_budget=deps.budget.budget if deps.budget else 0,  # the cap actually enforced
+        chunk_size=ingestion.get("chunk_size", 0),
+        chunk_overlap=ingestion.get("chunk_overlap", 0),
+        chunking_strategy=ingestion.get("chunking", {}).get("strategy", "fixed"),
+        embedding_provider=emb_provider,
+        embedding_model=emb_model,
+        embedding_dims=embedding.get("dims", 0),
     )
 
 
@@ -172,6 +183,7 @@ def ask(req: AskRequest):
             parent_expansion=knobs.parent_expansion if knobs else None,
             scope=req.scope,
             max_rounds=knobs.max_rounds if knobs else None,
+            top_k=knobs.top_k if knobs else None,
         )
         if knobs and knobs.max_rounds:
             max_rounds = knobs.max_rounds

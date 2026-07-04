@@ -24,6 +24,7 @@ class Knobs(BaseModel):
     rerank: Optional[bool] = None
     parent_expansion: Optional[bool] = None
     max_rounds: Optional[int] = Field(default=None, ge=1, le=8)
+    top_k: Optional[int] = Field(default=None, ge=1, le=12)   # chunks fed to the generator
 
 
 class AskRequest(BaseModel):
@@ -122,6 +123,13 @@ class ConfigResponse(BaseModel):
     spend_cap_tokens: int
     store_provider: str
     daily_token_budget: int = 0
+    # Index-time knobs — baked into the store at ingest; shown read-only (re-index to change).
+    chunk_size: int = 0
+    chunk_overlap: int = 0
+    chunking_strategy: str = ""
+    embedding_provider: str = ""
+    embedding_model: str = ""
+    embedding_dims: int = 0
 
 
 class HealthResponse(BaseModel):

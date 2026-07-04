@@ -67,6 +67,7 @@ export type Knobs = {
   rerank?: boolean;
   parent_expansion?: boolean;
   max_rounds?: number;
+  top_k?: number;
 };
 export type UploadResponse = {
   source: string;
@@ -82,4 +83,12 @@ export type ConfigInfo = {
   tools: string[];
   spend_cap_tokens: number;
   store_provider: string;
+  daily_token_budget?: number;
+  // Index-time knobs (baked at ingest; read-only in the UI).
+  chunk_size?: number;
+  chunk_overlap?: number;
+  chunking_strategy?: string;
+  embedding_provider?: string;
+  embedding_model?: string;
+  embedding_dims?: number;
 };

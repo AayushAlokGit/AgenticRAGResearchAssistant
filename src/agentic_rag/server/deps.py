@@ -138,7 +138,7 @@ def build_app_state() -> AppState:
 
 
 def build_scoped_graph(state: AppState, *, mode=None, rerank=None, parent_expansion=None,
-                       scope: str = "both", max_rounds=None):
+                       scope: str = "both", max_rounds=None, top_k=None):
     """Assemble a fresh graph over the SAME store/embedder/reranker singletons but with per-request
     retrieval knobs + scope. Cheap — no cross-encoder reload. Powers the scope toggle and the
     Basic-vs-Full compare (each preset is just a different set of knobs)."""
@@ -149,8 +149,9 @@ def build_scoped_graph(state: AppState, *, mode=None, rerank=None, parent_expans
                                 parent_expansion=parent_expansion, scope=scope,
                                 store=state.store, embedder=state.embedder, reranker=state.reranker)
     rounds = state.max_rounds if max_rounds is None else max_rounds
+    k = state.top_k if top_k is None else top_k
     return build_graph(retriever, state.controller_llm, state.generator_llm, state.registry,
-                       state.store, state.react_prompt, state.answer_prompt, state.top_k,
+                       state.store, state.react_prompt, state.answer_prompt, k,
                        rounds, state.answer_char_budget, state.ordering,
                        spend_cap_tokens=state.spend_cap_tokens)
 
