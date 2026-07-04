@@ -75,11 +75,14 @@ function configName(c: KnobConfig): string {
   return LADDER.find((p) => sameConfig(p.config, c))?.label ?? "Custom config";
 }
 
+// Chosen so the knob difference is VISIBLE: on these multi-source / "which documents" questions the
+// Full pipeline pulls several sources and answers completely, while Naive (dense, single-shot) grabs
+// far fewer — run them in Compare (A vs B) to see it. (Empirically picked; see the divergence probe.)
 const EXAMPLES = [
-  "What embedding model does the system use and why is it kept local?",
-  "How does hybrid retrieval combine BM25 and vector search?",
-  "Which documents describe the ChromaDB architecture, and what do they cover?",
-  "What are the trade-offs between the Azure and local ChromaDB approaches?",
+  "Which documents describe the claims extraction pipeline, and what does each cover?",
+  "What embedding models does the local embedding service support?",
+  "Which documents cover the RAG system's evaluation approach, and what does each describe?",
+  "How does the agentic RAG system decide when to stop its agent loop?",
 ];
 
 const REPO_URL = "https://github.com/AayushAlokGit/AgenticRAGResearchAssistant";
