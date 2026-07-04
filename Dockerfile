@@ -28,7 +28,9 @@ COPY --chown=user prompts ./prompts
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
-    STORE_PROVIDER=pgvector
+    STORE_PROVIDER=pgvector \
+    PYTHONUNBUFFERED=1
+
 
 # HF Spaces routes traffic to the port declared as app_port in the Space README (7860 by default).
 EXPOSE 7860
