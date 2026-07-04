@@ -1049,9 +1049,18 @@ export default function Home() {
         {/* example chips (idle only) */}
         {!running && !compareRunning && !compareRuns && rounds.length === 0 && !answer && (
           <div className="mt-3">
-            <p className="mb-2 text-[11px] text-zinc-600">
-              Sample questions, answered from a pre-seeded documentation corpus — or add your own on the{" "}
-              <span className="text-zinc-400">Documents</span> tab:
+            <p className="mb-2 text-xs leading-5 text-zinc-500">
+              These sample questions are answered from a <span className="text-zinc-300">pre-seeded documentation corpus</span>.
+              {" "}Want answers from <span className="text-zinc-300">your own documents</span>? Upload a PDF, Markdown, or
+              text file on the{" "}
+              <button
+                type="button"
+                onClick={() => setView("documents")}
+                className="font-medium text-sky-400 underline-offset-2 hover:text-sky-300 hover:underline"
+              >
+                Documents tab
+              </button>{" "}
+              and ask about them here.
             </p>
             <div className="flex flex-wrap gap-2">
               {EXAMPLES.map((ex) => (
