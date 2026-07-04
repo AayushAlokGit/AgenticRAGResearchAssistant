@@ -220,7 +220,7 @@ function renderInline(
         title={file}
         className="mx-0.5 inline-flex items-center rounded bg-sky-500/15 px-1.5 py-0.5 align-baseline font-mono text-[11px] text-sky-300 ring-1 ring-sky-500/30 transition-colors hover:bg-sky-500/25"
       >
-        {file.replace(/\.[^.]+$/, "")}
+        {file.replace(/^upload:/, "").replace(/\.[^.]+$/, "")}
       </button>,
     );
     last = m.index + m[0].length;

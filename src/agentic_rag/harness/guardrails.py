@@ -60,8 +60,11 @@ class GroundingResult:
 
 # A citation looks like `[filename.ext]` (prompt rule 3). Match bracketed content; a later filter
 # keeps only tokens that actually look like filenames, so prose like `[note]` or `[1]` is ignored.
+# The filename filter allows: an optional `upload:` source prefix (bring-your-own-doc ids look like
+# `upload:My File.pdf`), spaces in the name, and requires the extension to START with a letter so a
+# bracketed decimal like `[see 2.1]` isn't mistaken for a citation. Keep it in sync with UPLOAD_PREFIX.
 _BRACKET_RE = re.compile(r"\[([^\[\]]+)\]")
-_FILENAME_RE = re.compile(r"^[\w./-]+\.[A-Za-z0-9]+$")
+_FILENAME_RE = re.compile(r"^(?:upload:)?[\w ./-]+\.[A-Za-z][A-Za-z0-9]*$")
 
 
 def extract_citations(answer: str) -> Set[str]:
