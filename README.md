@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: Hand-built agentic RAG: reason, retrieve, cite in real time
+short_description: "Hand-built agentic RAG: reason, retrieve, cite in real time"
 ---
 
 # Agentic RAG Research Assistant
