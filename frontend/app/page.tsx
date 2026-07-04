@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { askStream, getConfig, getSources } from "@/lib/api";
+import { askStream, deleteDoc, getConfig, getSources, uploadDoc } from "@/lib/api";
 import type {
   AnswerEvent,
   ChunkView,
   ConfigInfo,
   DoneEvent,
   EvidenceEvent,
+  Scope,
   SourceInfo,
   ThinkEvent,
 } from "@/lib/types";
@@ -21,6 +22,17 @@ const EXAMPLES = [
 ];
 
 const REPO_URL = "https://github.com/AayushAlokGit/AgenticRAGResearchAssistant";
+
+const SCOPE_LABELS: Record<Scope, string> = {
+  both: "All",
+  uploads: "Uploaded",
+  demo: "Demo corpus",
+};
+
+// Uploaded sources are stored as `upload:<filename>`; strip the marker for display.
+function docName(source: string): string {
+  return source.startsWith("upload:") ? source.slice("upload:".length) : source;
+}
 
 // Inline GitHub mark so we don't pull an icon dependency for one glyph.
 function GitHubIcon({ className = "" }: { className?: string }) {
@@ -342,7 +354,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [scope, setScope] = useState<Scope>("both");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // The demo backend runs on a free Hugging Face Space that sleeps when idle and takes ~30–60s to
   // wake, so the first /config call can fail a few times before it answers. Retry a handful of
@@ -387,14 +403,45 @@ export default function Home() {
           else if (e.type === "error") setError(e.message);
         },
         controller.signal,
+        { scope },
       );
     } catch (err) {
       if ((err as Error).name !== "AbortError") setError(String(err));
     } finally {
       setRunning(false);
     }
-  }, [running, status]);
+  }, [running, status, scope]);
 
+  const refreshSources = useCallback(() => {
+    getSources().then(setSources).catch(() => {});
+  }, []);
+
+  const handleUpload = useCallback(async (file: File) => {
+    setUploadError(null);
+    setUploading(true);
+    try {
+      await uploadDoc(file);
+      refreshSources();
+      setScope("uploads"); // focus the just-uploaded doc so the next question queries it
+    } catch (err) {
+      setUploadError((err as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  }, [refreshSources]);
+
+  const handleDelete = useCallback(async (source: string) => {
+    try {
+      await deleteDoc(source);
+      const remaining = await getSources();
+      setSources(remaining);
+      if (!remaining.some((s) => s.uploaded)) setScope("both"); // nothing left to scope to
+    } catch {
+      // leave the doc listed if the delete failed
+    }
+  }, []);
+
+  const uploadedDocs = sources.filter((s) => s.uploaded);
   const totalChunks = sources.reduce((n, s) => n + s.chunks, 0);
 
   // Pool every chunk we've seen (evidence + final window) so the drawer can show a source's chunks.
@@ -440,6 +487,90 @@ export default function Home() {
           <Badge>top_k: {config.top_k}</Badge>
           <Badge>tools: {config.tools.join(", ")}</Badge>
           {totalChunks > 0 && <Badge>{sources.length} docs · {totalChunks} chunks</Badge>}
+        </div>
+      )}
+
+      {/* bring-your-own-doc: upload + retrieval scope + manage */}
+      {status === "ready" && (
+        <div className="mb-1 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {uploading ? (
+                <>
+                  <Spinner /> indexing…
+                </>
+              ) : (
+                <>+ Add your document</>
+              )}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".md,.txt,.pdf"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleUpload(f);
+                e.target.value = ""; // allow re-selecting the same file
+              }}
+            />
+            {uploadedDocs.length > 0 && (
+              <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900 p-0.5 text-xs">
+                {(["both", "uploads", "demo"] as Scope[]).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setScope(s)}
+                    className={`rounded-md px-2.5 py-1 transition-colors ${
+                      scope === s ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {SCOPE_LABELS[s]}
+                  </button>
+                ))}
+              </div>
+            )}
+            <span className="text-[11px] text-zinc-600">md · txt · pdf, up to 2 MB</span>
+          </div>
+
+          {uploadError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+              {uploadError}
+            </div>
+          )}
+
+          {uploadedDocs.length > 0 && (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2">
+              <div className="mb-1 px-1 text-[10px] uppercase tracking-wide text-zinc-500">
+                Uploaded documents · shared &amp; deletable by anyone
+              </div>
+              {uploadedDocs.map((d) => (
+                <div
+                  key={d.source}
+                  className="flex items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800/50"
+                >
+                  <span className="min-w-0 flex-1 truncate text-xs text-zinc-300">
+                    {docName(d.source)}
+                    <span className="text-zinc-600"> · {d.chunks} chunk{d.chunks === 1 ? "" : "s"}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(d.source)}
+                    className="rounded px-1 text-zinc-500 hover:text-red-400"
+                    title="Delete this document"
+                    aria-label={`Delete ${docName(d.source)}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

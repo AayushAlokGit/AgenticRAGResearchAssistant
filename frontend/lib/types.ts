@@ -58,7 +58,22 @@ export type StreamEvent =
   | ErrorEvent;
 
 export type DocTags = { doc_type?: string; topics?: string[]; entities?: string[] };
-export type SourceInfo = { source: string; chunks: number; tags: DocTags };
+export type SourceInfo = { source: string; chunks: number; tags: DocTags; uploaded: boolean };
+
+// Retrieval scope toggle + per-request technique overrides (bring-your-own-doc + compare/knobs).
+export type Scope = "both" | "uploads" | "demo";
+export type Knobs = {
+  mode?: "dense" | "hybrid";
+  rerank?: boolean;
+  parent_expansion?: boolean;
+  max_rounds?: number;
+};
+export type UploadResponse = {
+  source: string;
+  name: string;
+  chunks: number;
+  total_chunks: number;
+};
 export type ConfigInfo = {
   max_rounds: number;
   controller_model: string;
