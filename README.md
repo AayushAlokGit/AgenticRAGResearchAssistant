@@ -1,3 +1,14 @@
+---
+title: AgenticRAG
+emoji: 🔎
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: A hand-built agentic RAG system that reasons, retrieves, and cites in real time.
+---
+
 # Agentic RAG Research Assistant
 
 A from-scratch, **eval-gated** agentic RAG system that answers complex, multi-hop
