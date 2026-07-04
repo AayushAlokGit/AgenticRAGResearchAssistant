@@ -42,16 +42,31 @@ def extract_text(filename: str, data: bytes) -> str:
     """Turn uploaded bytes into plain text. .md/.txt decode directly; .pdf via pypdf.
 
     Everything downstream (chunking, embedding) treats the result as raw text, so all this layer
-    owes is *getting to text*. PDF extraction quality varies with how the PDF was produced — that's
-    inherent to PDFs, not something we can fix here.
+    owes is *getting to text*. This is the extraction seam, so it also owns FAILING CLEANLY: it only
+    ever raises ``ValueError`` (which the /upload handler maps to a 400), never lets a library-
+    specific error escape as a 500. PDF extraction quality varies with how the PDF was produced —
+    that's inherent to PDFs, not something we can fix here.
     """
     name = (filename or "").lower()
     if name.endswith(".pdf"):
         from pypdf import PdfReader  # lazy: only imported when a PDF is actually uploaded
 
-        reader = PdfReader(io.BytesIO(data))
-        pages = [(page.extract_text() or "") for page in reader.pages]
-        return "\n\n".join(pages).strip()
+        # H1 — a corrupt / encrypted / not-really-a-PDF upload makes pypdf raise (PdfReadError and
+        # friends). Catch broadly at this untrusted-input boundary and re-raise as a user-facing
+        # ValueError so it becomes a clean 400, not an unhandled 500.
+        try:
+            reader = PdfReader(io.BytesIO(data))
+            pages = [(page.extract_text() or "") for page in reader.pages]
+        except Exception as exc:
+            raise ValueError("Could not read this PDF — it may be corrupt, encrypted, "
+                             "or not a valid PDF file.") from exc
+        text = "\n\n".join(pages).strip()
+        # H2 — a scanned / image-only PDF parses fine but yields no selectable text. Name the likely
+        # cause so the user knows why (and that OCR, which we don't do, is what it would need).
+        if not text:
+            raise ValueError("This PDF has no selectable text — it looks scanned or image-only, "
+                             "so there is nothing to index. Try a text-based PDF.")
+        return text
     # .md / .txt (and any allowed text file) — decode as UTF-8, tolerate stray bytes.
     return data.decode("utf-8", errors="replace").strip()
 
