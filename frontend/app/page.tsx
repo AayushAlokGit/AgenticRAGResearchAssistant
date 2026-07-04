@@ -196,19 +196,22 @@ function Badge({ children, className = "" }: { children: ReactNode; className?: 
 
 function RoundCard({
   data,
+  active,
   onOpenSource,
 }: {
   data: RoundData;
+  active: boolean;
   onOpenSource: (s: string) => void;
 }) {
   const { think, evidence } = data;
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40">
+    <div
+      className={`rounded-lg border bg-zinc-900/40 ${active ? "border-sky-500/40" : "border-zinc-800"}`}
+    >
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
-        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-800 font-mono text-[11px] text-zinc-400">
-          {data.round}
-        </span>
-        <span className="text-xs font-medium text-zinc-400">
+        <span
+          className={`text-xs font-medium ${think?.finish ? "text-emerald-300" : "text-zinc-400"}`}
+        >
           {think?.finish ? "decided to answer" : "reason → retrieve"}
         </span>
         {think && (
@@ -224,11 +227,11 @@ function RoundCard({
               {think.actions.map((a, i) => (
                 <span
                   key={i}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-xs"
+                  className="inline-flex max-w-full items-start gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-xs"
                 >
-                  <span className="font-mono text-sky-400">{a.tool}</span>
+                  <span className="shrink-0 font-mono text-sky-400">{a.tool}</span>
                   {typeof a.args.query === "string" && (
-                    <span className="text-zinc-400">“{a.args.query as string}”</span>
+                    <span className="min-w-0 break-words text-zinc-400">“{a.args.query as string}”</span>
                   )}
                 </span>
               ))}
@@ -510,12 +513,39 @@ export default function Home() {
             </h2>
             {running && <span className="text-xs text-sky-400">streaming…</span>}
           </div>
-          <div className="space-y-2">
-            {rounds
+          <div>
+            {[...rounds]
               .sort((a, b) => a.round - b.round)
-              .map((r) => (
-                <RoundCard key={r.round} data={r} onOpenSource={setSelectedSource} />
-              ))}
+              .map((r, i, all) => {
+                const isLast = i === all.length - 1;
+                const isActive = running && isLast;
+                const isFinish = !!r.think?.finish;
+                return (
+                  <div key={r.round} className="flex gap-3 pb-3 last:pb-0">
+                    {/* timeline rail: node + line to the next round */}
+                    <div className="flex flex-col items-center">
+                      <span
+                        className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] ${
+                          isFinish
+                            ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                            : isActive
+                              ? "border-sky-500/50 bg-sky-500/15 text-sky-300"
+                              : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                        }`}
+                      >
+                        {isActive && (
+                          <span className="absolute inset-0 animate-ping rounded-full bg-sky-500/30" />
+                        )}
+                        <span className="relative">{r.round}</span>
+                      </span>
+                      {!isLast && <span className="w-px flex-1 bg-zinc-800" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <RoundCard data={r} active={isActive} onOpenSource={setSelectedSource} />
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         </section>
       )}
@@ -542,6 +572,17 @@ export default function Home() {
           <p className="mt-2 text-xs text-zinc-600">
             Tip: click a citation to see the exact chunk the model was given.
           </p>
+        </section>
+      )}
+
+      {/* couldn't-answer empty state: run finished but the agent stopped before producing an answer */}
+      {done && !answer && !error && (
+        <section className="mt-6">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+            The agent stopped before it could answer
+            {done.exit_reason !== "finish" && <> (hit its {done.exit_reason.replace("_", " ")} limit)</>}.
+            Try rephrasing, or ask something the corpus actually covers.
+          </div>
         </section>
       )}
 

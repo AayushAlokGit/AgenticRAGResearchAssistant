@@ -74,6 +74,18 @@ def build_app_state() -> AppState:
     logger.info("server: graph built (store holds %d chunks, max_rounds=%d, spend_cap=%d)",
                 store.count(), max_rounds, spend_cap_tokens)
 
+    # Warm the lazily-loaded models (cross-encoder reranker + embedder) at boot so the FIRST real
+    # request doesn't eat the ~tens-of-seconds cold model-load spike. Best-effort: a failure here
+    # must not crash startup — the models would just load lazily on first use, as before.
+    import time
+
+    t0 = time.perf_counter()
+    try:
+        retriever.query("warmup", 1)
+        logger.info("server: warmed retriever models in %.1fs", time.perf_counter() - t0)
+    except Exception as exc:  # noqa: BLE001 — warm-up is opportunistic
+        logger.warning("server: retriever warm-up skipped (%s)", exc)
+
     # Durable daily token budget (the $0 kill-switch). Needs Postgres; skipped if off or no DB.
     daily_budget = int(os.environ.get(
         "DAILY_TOKEN_BUDGET", config.get("guardrails", {}).get("daily_token_budget", 0)))
