@@ -417,16 +417,53 @@ type RunState = {
 
 const EMPTY_RUN: RunState = { rounds: [], answer: null, done: null, error: null, running: false };
 
+// The retrieval story in three numbers — what a collapsed trajectory shows instead of every round card.
+function trajectoryStats(run: RunState) {
+  const searches = run.rounds.reduce(
+    (n, r) => n + (r.think?.actions.filter((a) => a.tool === "search").length ?? 0),
+    0,
+  );
+  // chunks the generator actually saw once done; while streaming, the running tally of new chunks.
+  const chunks = run.answer
+    ? run.answer.retrieved.length
+    : run.rounds.reduce((n, r) => n + (r.evidence?.new_count ?? 0), 0);
+  return { rounds: run.done?.rounds ?? run.rounds.length, searches, chunks };
+}
+
+// Collapsed trajectory: one compact line so the two compare columns stay aligned (the full round-by-round
+// cards are the variable-height element that otherwise pushes answers + meters out of line).
+function TrajectorySummary({ run }: { run: RunState }) {
+  const { rounds, searches, chunks } = trajectoryStats(run);
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  return (
+    <div className="mb-4 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs">
+      <span className="font-semibold uppercase tracking-wide text-zinc-500">reason → retrieve</span>
+      {run.running ? (
+        <span className="inline-flex items-center gap-1.5 text-sky-400">
+          <Spinner /> round {run.rounds.length} · working…
+        </span>
+      ) : (
+        <span className="font-mono text-[11px] text-zinc-400">
+          {plural(rounds, "round", "rounds")} · {plural(searches, "search", "searches")} ·{" "}
+          {plural(chunks, "chunk", "chunks")}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function RunView({
   run,
   onOpenSource,
   title,
   knobs,
+  collapseTrajectory = false,
 }: {
   run: RunState;
   onOpenSource: (s: string) => void;
   title?: string;
   knobs?: KnobConfig; // the retrieval knobs this run used — shown as chips so every run is labelled
+  collapseTrajectory?: boolean; // Compare mode: show the summary hint instead of full round cards
 }) {
   const { rounds, answer, done, error, running } = run;
   return (
@@ -455,8 +492,9 @@ function RunView({
         </div>
       )}
 
-      {/* trajectory */}
-      {rounds.length > 0 && (
+      {/* trajectory — collapsed to a summary hint in Compare mode, full round cards otherwise */}
+      {rounds.length > 0 && collapseTrajectory && <TrajectorySummary run={run} />}
+      {rounds.length > 0 && !collapseTrajectory && (
         <section className="mb-4">
           <div className="mb-2 flex items-center gap-2">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Agent trajectory</h2>
@@ -672,6 +710,7 @@ export default function Home() {
   const [compareMode, setCompareMode] = useState(false); // whether the second config panel is shown
   const [singleKnobs, setSingleKnobs] = useState<KnobConfig | null>(null); // snapshot shown on the single run
   const [compareConfigs, setCompareConfigs] = useState<[KnobConfig, KnobConfig] | null>(null);
+  const [showTrajectory, setShowTrajectory] = useState(false); // Compare: expand both trajectories together
   const abortRef = useRef<AbortController | null>(null);
   const compareAbortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1083,21 +1122,31 @@ export default function Home() {
       {/* results: single run, or the two-config compare (side by side, each labelled with its knobs) */}
       {compareRuns && compareConfigs ? (
         <div className="mb-10 mt-6">
-          <p className="mb-3 text-xs text-zinc-500">
-            Same question, two knob configs — watch how the retrieval pipeline changes the trajectory and answer.
-          </p>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-zinc-500">
+              Same question, two knob configs — see how the retrieval pipeline changes the answer.
+            </p>
+            <button
+              onClick={() => setShowTrajectory((v) => !v)}
+              className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
+            >
+              {showTrajectory ? "Hide agent trajectory" : "Show agent trajectory"}
+            </button>
+          </div>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
             <RunView
               run={compareRuns[0]}
               onOpenSource={setSelectedSource}
               title={configName(compareConfigs[0])}
               knobs={compareConfigs[0]}
+              collapseTrajectory={!showTrajectory}
             />
             <RunView
               run={compareRuns[1]}
               onOpenSource={setSelectedSource}
               title={configName(compareConfigs[1])}
               knobs={compareConfigs[1]}
+              collapseTrajectory={!showTrajectory}
             />
           </div>
         </div>
