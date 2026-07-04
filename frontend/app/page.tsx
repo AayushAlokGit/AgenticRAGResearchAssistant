@@ -973,9 +973,17 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => setCompareMode((v) => !v)}
-                className="text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  compareMode
+                    ? "border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                    : "border-sky-500/50 bg-sky-500/10 text-sky-200 hover:border-sky-400 hover:bg-sky-500/20"
+                }`}
               >
-                {compareMode ? "− Remove second config" : "+ Compare against a second config"}
+                {compareMode ? (
+                  "− Remove second config"
+                ) : (
+                  <>⚡ Compare against a second config — tune both, run side by side</>
+                )}
               </button>
             </div>
           )}
@@ -1040,20 +1048,26 @@ export default function Home() {
 
         {/* example chips (idle only) */}
         {!running && !compareRunning && !compareRuns && rounds.length === 0 && !answer && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {EXAMPLES.map((ex) => (
-              <button
-                key={ex}
-                onClick={() => {
-                  setQuestion(ex);
-                  if (compareMode) runCompare(ex);
-                  else run(ex);
-                }}
-                className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-left text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
-              >
-                {ex}
-              </button>
-            ))}
+          <div className="mt-3">
+            <p className="mb-2 text-[11px] text-zinc-600">
+              Sample questions, answered from a pre-seeded documentation corpus — or add your own on the{" "}
+              <span className="text-zinc-400">Documents</span> tab:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  onClick={() => {
+                    setQuestion(ex);
+                    if (compareMode) runCompare(ex);
+                    else run(ex);
+                  }}
+                  className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-left text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
