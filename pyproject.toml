@@ -27,6 +27,8 @@ dependencies = [
     "fastapi>=0.115",               # demo backend HTTP API (server/app.py)
     "uvicorn[standard]>=0.30",      # ASGI server for the FastAPI app
     "sse-starlette>=2.1",           # Server-Sent Events streaming of the agent trajectory
+    "python-multipart>=0.0.9",      # FastAPI file uploads (POST /upload, bring-your-own-doc)
+    "pypdf>=4.0",                   # extract text from uploaded PDFs (bring-your-own-doc)
 ]
 
 [tool.setuptools.packages.find]

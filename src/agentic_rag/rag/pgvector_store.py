@@ -134,19 +134,32 @@ class PgVectorStore:
         with self.pool.connection() as conn:
             conn.execute(stmt, (source,))
 
-    def query(self, embedding: List[float], top_k: int) -> List[Hit]:
+    def query(self, embedding: List[float], top_k: int, source_scope: str = "both") -> List[Hit]:
         """Return the ``top_k`` nearest chunks to ``embedding``, best first.
 
         ``<=>`` is cosine distance; ``1 - distance`` recovers the cosine similarity in [-1, 1] that
         the rest of the pipeline (and ``ChromaVectorStore``) speaks.
+
+        ``source_scope`` restricts the search to the retrieval scope: ``"both"`` (no filter),
+        ``"uploads"`` (only ``upload:``-prefixed docs) or ``"demo"`` (only the seed corpus). The
+        filter is pushed into SQL so the ANN search itself is scoped — over-fetch-then-filter would
+        lose recall when one scope is a small minority of the table.
         """
+        if source_scope == "uploads":
+            where, pattern = sql.SQL("where source like %s "), "upload:%"
+        elif source_scope == "demo":
+            where, pattern = sql.SQL("where source not like %s "), "upload:%"
+        else:
+            where, pattern = sql.SQL(""), None
         stmt = sql.SQL(
             "select source, chunk_index, text, 1 - (embedding <=> %s) as score"
-            " from {t} order by embedding <=> %s limit %s"
-        ).format(t=self._table())
+            " from {t} {w} order by embedding <=> %s limit %s"
+        ).format(t=self._table(), w=where)
+        vec = Vector(embedding)
+        params = (vec, vec, top_k) if pattern is None else (vec, pattern, vec, top_k)
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(stmt, (Vector(embedding), Vector(embedding), top_k))
+                cur.execute(stmt, params)
                 rows = cur.fetchall()
         return [
             Hit(source=r[0], chunk_index=r[1], text=r[2], score=float(r[3]))

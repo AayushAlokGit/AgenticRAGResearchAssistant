@@ -23,9 +23,44 @@ from typing import List, Optional
 from agentic_rag.config import resolve_path
 from agentic_rag.rag.bm25 import BM25Index
 from agentic_rag.rag.embeddings import build_embedder
-from agentic_rag.rag.vector_store import ChromaVectorStore, Hit, build_store
+from agentic_rag.rag.vector_store import UPLOAD_PREFIX, ChromaVectorStore, Hit, build_store
 
 logger = logging.getLogger(__name__)
+
+
+class ScopedStore:
+    """A read-only view over a store restricted to one retrieval scope: 'both' | 'uploads' | 'demo'.
+
+    'both' is a pass-through; 'uploads'/'demo' filter on the ``upload:`` source prefix so the UI scope
+    toggle can search the seed corpus, the user's own uploads, or everything. Only the three methods
+    the retriever stack actually calls are proxied — ``query`` (dense), ``all_chunks`` (BM25 build),
+    ``fetch_source_chunks`` (parent-expansion). A chunk's source is entirely one scope, so the
+    parent-fetch needs no filtering; the dense filter is pushed down into the store's ``query`` so the
+    ANN search itself is scoped (over-fetch-then-filter would lose recall for a minority scope).
+    """
+
+    def __init__(self, store, scope: str = "both"):
+        self.store = store
+        self.scope = scope
+
+    def _in_scope(self, source: str) -> bool:
+        if self.scope == "uploads":
+            return source.startswith(UPLOAD_PREFIX)
+        if self.scope == "demo":
+            return not source.startswith(UPLOAD_PREFIX)
+        return True
+
+    def query(self, embedding, top_k):
+        return self.store.query(embedding, top_k, source_scope=self.scope)
+
+    def all_chunks(self):
+        return [c for c in self.store.all_chunks() if self._in_scope(c["source"])]
+
+    def fetch_source_chunks(self, source):
+        return self.store.fetch_source_chunks(source)
+
+    def count(self):
+        return self.store.count() if self.scope == "both" else len(self.all_chunks())
 
 
 class DenseRetriever:
@@ -270,24 +305,36 @@ def build_base_retriever(config: dict, mode: str, dense: DenseRetriever, store: 
     raise ValueError(f"Unknown retrieval mode: {mode!r} (expected 'dense' or 'hybrid')")
 
 
-def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[bool] = None):
+def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[bool] = None, *,
+                    store=None, embedder=None, reranker=None,
+                    parent_expansion: Optional[bool] = None, scope: str = "both"):
     """Construct the retriever: stage-1 base (``mode``), optionally wrapped with reranking.
 
     ``mode``   — "dense" | "hybrid" (falls back to config ``retrieval.mode``).
     ``rerank`` — True/False to force the cross-encoder stage on/off; None uses
                  config ``retrieval.rerank.enabled``. Lets the eval A/B rerank cleanly.
+
+    Injected ``store`` / ``embedder`` / ``reranker`` are REUSED instead of rebuilt — this is what
+    lets the server build a fresh retriever per upload / per request without reloading the ~22s
+    cross-encoder. ``parent_expansion`` (True/False) overrides config; ``scope`` ('both'|'uploads'|
+    'demo') restricts retrieval to the seed corpus, the user's uploads, or everything (the UI toggle).
     """
     retrieval_cfg = config["retrieval"]
     if mode is None:
         mode = retrieval_cfg.get("mode", "dense")
 
-    store = build_store(config)
-    if store.count() == 0:
-        raise SystemExit("Vector store is empty — run `python -m agentic_rag.rag.ingest` first.")
-    embedder = build_embedder(config)
-    dense = DenseRetriever(embedder, store)
+    if store is None:
+        store = build_store(config)
+        if store.count() == 0:
+            raise SystemExit("Vector store is empty — run `python -m agentic_rag.rag.ingest` first.")
+    if embedder is None:
+        embedder = build_embedder(config)
 
-    base = build_base_retriever(config, mode, dense, store)
+    # Everything below retrieves through the scoped view; scope="both" is a transparent pass-through.
+    scoped = ScopedStore(store, scope)
+    dense = DenseRetriever(embedder, scoped)
+
+    base = build_base_retriever(config, mode, dense, scoped)
 
     # Stage 1.5 (optional): RAG-Fusion. Expand each query into facet-diverse variants and fuse
     # their results BEFORE reranking, so the cross-encoder re-scores a richer pool (DD-034).
@@ -307,22 +354,24 @@ def build_retriever(config: dict, mode: Optional[str] = None, rerank: Optional[b
         rerank = rerank_cfg.get("enabled", False)
 
     pe_cfg = retrieval_cfg.get("parent_expansion", {})
-    parent_on = pe_cfg.get("enabled", False)
-    logger.info("building retriever: mode=%s, multi_query=%s, rerank=%s, parent_expansion=%s, store holds %d chunks",
-                mode, mq_on, rerank, parent_on, store.count())
+    parent_on = pe_cfg.get("enabled", False) if parent_expansion is None else parent_expansion
+    logger.info("building retriever: mode=%s, multi_query=%s, rerank=%s, parent_expansion=%s, scope=%s, store holds %d chunks",
+                mode, mq_on, rerank, parent_on, scope, scoped.count())
 
     if rerank:
-        # Stage 2: wrap the base in a cross-encoder reranker (imported here so the dependency
-        # only loads when reranking is actually on).
-        from agentic_rag.rag.rerank import CrossEncoderReranker, DEFAULT_MODEL
+        # Stage 2: wrap the base in a cross-encoder reranker. Reuse an injected reranker if given
+        # (the server passes the singleton so this doesn't reload the ~22s cross-encoder each call);
+        # otherwise build one here (imported lazily so the dependency only loads when rerank is on).
+        if reranker is None:
+            from agentic_rag.rag.rerank import CrossEncoderReranker, DEFAULT_MODEL
 
-        reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL))
+            reranker = CrossEncoderReranker(rerank_cfg.get("model", DEFAULT_MODEL))
         candidate_k = rerank_cfg.get("candidate_k", 20)
         logger.debug("reranking on: candidate_k=%s -> top_k", candidate_k)
         base = RerankRetriever(base, reranker, candidate_k)
 
     if parent_on:
         # Stage 3 (optional): expand each retrieved child to its contiguous neighbours.
-        base = ParentExpansionRetriever(base, store, pe_cfg.get("window", 1))
+        base = ParentExpansionRetriever(base, scoped, pe_cfg.get("window", 1))
 
     return base

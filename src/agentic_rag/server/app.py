@@ -18,13 +18,15 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
-from agentic_rag.server.deps import build_app_state
+from agentic_rag.rag.upload import (ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, display_name, ingest_bytes,
+                                    is_upload)
+from agentic_rag.server.deps import build_app_state, build_scoped_graph, rebuild_default_graph
 from agentic_rag.server.schemas import (AskRequest, ConfigResponse, ErrorEvent, HealthResponse,
-                                        SourceInfo, SourcesResponse)
+                                        SourceInfo, SourcesResponse, UploadResponse)
 from agentic_rag.server.stream import stream_events
 
 logger = logging.getLogger(__name__)
@@ -49,7 +51,7 @@ app = FastAPI(title="Agentic RAG Research Assistant — demo API", lifespan=life
 # dev, the Vercel origins in prod via FRONTEND_ORIGINS="https://a.com,https://b.com").
 _default_origins = "http://localhost:3000,http://127.0.0.1:3000"
 _origins = [o.strip() for o in os.environ.get("FRONTEND_ORIGINS", _default_origins).split(",") if o.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["GET", "POST"],
+app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["GET", "POST", "DELETE"],
                    allow_headers=["*"])
 
 
@@ -88,8 +90,46 @@ def sources():
     for chunk in deps.store.all_chunks():
         counts[chunk["source"]] = counts.get(chunk["source"], 0) + 1
     tags = deps.store.load_tags()
-    infos = [SourceInfo(source=s, chunks=counts[s], tags=tags.get(s, {})) for s in sorted(counts)]
+    infos = [SourceInfo(source=s, chunks=counts[s], tags=tags.get(s, {}), uploaded=is_upload(s))
+             for s in sorted(counts)]
     return SourcesResponse(sources=infos)
+
+
+@app.post("/upload", response_model=UploadResponse)
+def upload(file: UploadFile = File(...)):
+    """Bring-your-own-doc: ingest an uploaded md/txt/pdf into the shared store (marked ``upload:``),
+    then rebuild the default graph's BM25 so the new doc is keyword-searchable immediately. A sync
+    handler (FastAPI runs it in a threadpool), so the blocking extract/embed/index work stays off the
+    event loop. Uploaded docs are shared, deletable via /documents, and never touch the seed corpus.
+    """
+    deps = app.state.deps
+    name = file.filename or "document"
+    if not name.lower().endswith(ALLOWED_EXTENSIONS):
+        raise HTTPException(status_code=415,
+                            detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+    data = file.file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
+    try:
+        result = ingest_bytes(name, data, deps.embedder, deps.store, deps.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    rebuild_default_graph(deps)   # refresh BM25 so the upload is keyword-searchable, not just dense
+    return UploadResponse(source=result["source"], name=display_name(result["source"]),
+                          chunks=result["chunks"], total_chunks=deps.store.count())
+
+
+@app.delete("/documents/{source:path}")
+def delete_document(source: str):
+    """Delete one UPLOADED document (seed corpus is protected — only ``upload:``-marked sources)."""
+    deps = app.state.deps
+    if not is_upload(source):
+        raise HTTPException(status_code=403,
+                            detail="Only uploaded documents can be deleted; the seed corpus is protected.")
+    deps.store.delete_by_source(source)
+    rebuild_default_graph(deps)
+    return {"deleted": source, "total_chunks": deps.store.count()}
 
 
 def _ask_stream(graph, question: str, max_rounds: int, budget):
@@ -118,4 +158,21 @@ def ask(req: AskRequest):
     deps = app.state.deps
     if deps.budget is not None and deps.budget.is_exhausted():
         return EventSourceResponse(iter([_sse(ErrorEvent(message=_RESTING_MESSAGE))]))
-    return EventSourceResponse(_ask_stream(deps.graph, req.question, deps.max_rounds, deps.budget))
+
+    # Default fast path reuses the prebuilt graph; a scope toggle or knob override (Compare / Advanced)
+    # builds a per-request graph cheaply over the same store/embedder/reranker singletons.
+    graph = deps.graph
+    max_rounds = deps.max_rounds
+    knobs = req.knobs
+    if req.scope != "both" or knobs is not None:
+        graph = build_scoped_graph(
+            deps,
+            mode=knobs.mode if knobs else None,
+            rerank=knobs.rerank if knobs else None,
+            parent_expansion=knobs.parent_expansion if knobs else None,
+            scope=req.scope,
+            max_rounds=knobs.max_rounds if knobs else None,
+        )
+        if knobs and knobs.max_rounds:
+            max_rounds = knobs.max_rounds
+    return EventSourceResponse(_ask_stream(graph, req.question, max_rounds, deps.budget))

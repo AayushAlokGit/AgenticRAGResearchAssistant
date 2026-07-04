@@ -16,8 +16,20 @@ from pydantic import BaseModel, Field
 MAX_QUESTION_CHARS = 500
 
 
+class Knobs(BaseModel):
+    """Per-request retrieval overrides (the Compare/Advanced toggles). All optional — an unset field
+    falls back to the config default. A 'Basic RAG' preset is mode=dense, rerank/parent off,
+    max_rounds=1 (single-shot); 'Full System' leaves them at config (hybrid+rerank+parent, agentic)."""
+    mode: Optional[Literal["dense", "hybrid"]] = None
+    rerank: Optional[bool] = None
+    parent_expansion: Optional[bool] = None
+    max_rounds: Optional[int] = Field(default=None, ge=1, le=8)
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    scope: Literal["both", "uploads", "demo"] = "both"   # retrieval scope toggle
+    knobs: Optional[Knobs] = None                          # per-request technique overrides
 
 
 class ChunkView(BaseModel):
@@ -85,10 +97,19 @@ class SourceInfo(BaseModel):
     source: str
     chunks: int
     tags: dict = Field(default_factory=dict)
+    uploaded: bool = False       # True for a bring-your-own-doc upload (deletable; not seed corpus)
 
 
 class SourcesResponse(BaseModel):
     sources: List[SourceInfo]
+
+
+class UploadResponse(BaseModel):
+    """Result of ingesting one uploaded document into the store."""
+    source: str                  # the stored source id (upload:<name>)
+    name: str                    # display filename (marker stripped)
+    chunks: int                  # chunks indexed from this doc
+    total_chunks: int            # store size after the upload
 
 
 class ConfigResponse(BaseModel):

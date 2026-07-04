@@ -21,6 +21,10 @@ from chromadb.config import Settings
 
 _COLLECTION_METADATA = {"hnsw:space": "cosine"}  # cosine distance = 1 − cosine similarity
 
+# Every uploaded (bring-your-own-doc) chunk's `source` starts with this marker. Lives here, at the
+# lowest layer, so the store's scope filter and the retriever both key off one definition.
+UPLOAD_PREFIX = "upload:"
+
 
 def _rows(documents, metadatas):
     """Zip Chroma's parallel documents/metadatas lists into ``(i, text, meta)`` triples.
@@ -74,18 +78,32 @@ class ChromaVectorStore:
         if not chunks:
             return
         ids = [f"{source}::{i}" for i in range(len(chunks))]
-        metadatas = [{"source": source, "chunk_index": i} for i in range(len(chunks))]
+        # `is_upload` mirrors the pgvector store's `source like 'upload:%'` scope filter so the
+        # retrieval scope toggle ("demo / uploads / both") works on the Chroma backend too.
+        is_upload = source.startswith(UPLOAD_PREFIX)
+        metadatas = [{"source": source, "chunk_index": i, "is_upload": is_upload}
+                     for i in range(len(chunks))]
         self.collection.upsert(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
 
     def delete_by_source(self, source: str) -> None:
         """Remove every chunk belonging to one source document (on change or delete)."""
         self.collection.delete(where={"source": source})
 
-    def query(self, embedding: List[float], top_k: int) -> List[Hit]:
-        """Return the ``top_k`` nearest chunks to ``embedding``, best first."""
+    def query(self, embedding: List[float], top_k: int, source_scope: str = "both") -> List[Hit]:
+        """Return the ``top_k`` nearest chunks to ``embedding``, best first.
+
+        ``source_scope`` = "both" | "uploads" | "demo" restricts the search via the ``is_upload``
+        metadata flag (the Chroma twin of the pgvector ``source like 'upload:%'`` filter).
+        """
+        where = None
+        if source_scope == "uploads":
+            where = {"is_upload": True}
+        elif source_scope == "demo":
+            where = {"is_upload": False}
         res = self.collection.query(
             query_embeddings=[embedding],
             n_results=top_k,
+            where=where,
             include=["documents", "metadatas", "distances"],
         )
         # ChromaDB nests results one level per query; we issued one query.
