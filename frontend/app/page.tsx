@@ -549,16 +549,18 @@ function RunView({
 function KnobPanel({
   config,
   onChange,
+  title = "Retrieval pipeline",
+  showLegend = true,
 }: {
   config: KnobConfig;
   onChange: (c: KnobConfig) => void;
+  title?: string;
+  showLegend?: boolean;
 }) {
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-          Retrieval pipeline
-        </span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">{title}</span>
         <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
           top_k
           <select
@@ -613,16 +615,18 @@ function KnobPanel({
         ))}
       </div>
       {/* legend: a one-line definition of each knob */}
-      <dl className="mt-2 grid gap-x-5 gap-y-1 border-t border-zinc-800 pt-2 text-[11px] text-zinc-500 sm:grid-cols-2">
-        {KNOB_TOGGLES.map((t) => (
-          <div key={t.key}>
-            <span className="text-zinc-400">{t.label}</span> — {t.desc}
+      {showLegend && (
+        <dl className="mt-2 grid gap-x-5 gap-y-1 border-t border-zinc-800 pt-2 text-[11px] text-zinc-500 sm:grid-cols-2">
+          {KNOB_TOGGLES.map((t) => (
+            <div key={t.key}>
+              <span className="text-zinc-400">{t.label}</span> — {t.desc}
+            </div>
+          ))}
+          <div>
+            <span className="text-zinc-400">top_k</span> — how many retrieved chunks are fed to the generator
           </div>
-        ))}
-        <div>
-          <span className="text-zinc-400">top_k</span> — how many retrieved chunks are fed to the generator
-        </div>
-      </dl>
+        </dl>
+      )}
     </div>
   );
 }
@@ -633,11 +637,11 @@ function IndexSettings({ config }: { config: ConfigInfo }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
       <span className="text-zinc-600">index-time (set at ingest):</span>
+      <Badge>chunk size {config.chunk_size} chars</Badge>
+      <Badge>{config.chunk_overlap}-char overlap</Badge>
+      <Badge>{config.chunking_strategy} chunking</Badge>
       <Badge>
-        chunk {config.chunk_size}/{config.chunk_overlap} · {config.chunking_strategy}
-      </Badge>
-      <Badge>
-        {config.embedding_model} · {config.embedding_dims}d
+        {config.embedding_model} · {config.embedding_dims}-dim embeddings
       </Badge>
       <span className="text-zinc-600">— re-index to change</span>
     </div>
@@ -661,9 +665,10 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [compareRuns, setCompareRuns] = useState<[RunState, RunState] | null>(null);
-  const [knobConfig, setKnobConfig] = useState<KnobConfig>(FULL_CONFIG); // the active retrieval config
+  const [knobConfig, setKnobConfig] = useState<KnobConfig>(FULL_CONFIG); // config A (the main panel)
+  const [knobConfigB, setKnobConfigB] = useState<KnobConfig>(LADDER[0].config); // config B (compare, default Naive)
+  const [compareMode, setCompareMode] = useState(false); // whether the second config panel is shown
   const [singleKnobs, setSingleKnobs] = useState<KnobConfig | null>(null); // snapshot shown on the single run
-  const [compareB, setCompareB] = useState<KnobConfig>(LADDER[0].config); // the config to compare against (default Naive)
   const [compareConfigs, setCompareConfigs] = useState<[KnobConfig, KnobConfig] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const compareAbortRef = useRef<AbortController | null>(null);
@@ -728,7 +733,7 @@ export default function Home() {
   const runCompare = useCallback(async (q: string) => {
     const query = q.trim();
     if (!query || running || status !== "ready") return;
-    const configs: [KnobConfig, KnobConfig] = [knobConfig, compareB];
+    const configs: [KnobConfig, KnobConfig] = [knobConfig, knobConfigB];
     setRounds([]);
     setAnswer(null);
     setDone(null);
@@ -765,7 +770,7 @@ export default function Home() {
         .finally(() => update(idx, (rs) => ({ ...rs, running: false })));
 
     await Promise.all([stream(0), stream(1)]);
-  }, [running, status, scope, knobConfig, compareB]);
+  }, [running, status, scope, knobConfig, knobConfigB]);
 
   const compareRunning = !!compareRuns && compareRuns.some((r) => r.running);
 
@@ -945,10 +950,30 @@ export default function Home() {
             </div>
           )}
 
-          {/* KNOB PANEL — the first-class idea: tune the retrieval pipeline, watch behavior change */}
+          {/* KNOB PANEL(S) — the first-class idea: tune the retrieval pipeline, watch behavior change.
+              Compare mode reveals a second, independently-tunable config B. */}
           {status === "ready" && (
-            <div className="mb-3">
-              <KnobPanel config={knobConfig} onChange={setKnobConfig} />
+            <div className="mb-3 space-y-2">
+              <KnobPanel
+                config={knobConfig}
+                onChange={setKnobConfig}
+                title={compareMode ? "Config A" : "Retrieval pipeline"}
+              />
+              {compareMode && (
+                <KnobPanel
+                  config={knobConfigB}
+                  onChange={setKnobConfigB}
+                  title="Config B"
+                  showLegend={false}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => setCompareMode((v) => !v)}
+                className="text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
+              >
+                {compareMode ? "− Remove second config" : "+ Compare against a second config"}
+              </button>
             </div>
           )}
 
@@ -973,12 +998,13 @@ export default function Home() {
             </div>
           )}
 
-      {/* input */}
+      {/* input + primary action (Ask, or Compare A vs B when a second config is active) */}
       <div className="mt-1">
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            run(question);
+            if (compareMode) runCompare(question);
+            else run(question);
           }}
           className="flex gap-2"
         >
@@ -989,10 +1015,10 @@ export default function Home() {
             maxLength={500}
             className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-sky-600"
           />
-          {running ? (
+          {running || compareRunning ? (
             <button
               type="button"
-              onClick={() => abortRef.current?.abort()}
+              onClick={() => (compareMode ? compareAbortRef : abortRef).current?.abort()}
               className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 text-sm text-zinc-300 hover:bg-zinc-700"
             >
               Stop
@@ -1002,69 +1028,29 @@ export default function Home() {
               type="submit"
               disabled={!question.trim() || status !== "ready"}
               title={status !== "ready" ? "Waiting for the backend to be ready…" : undefined}
-              className="rounded-lg bg-sky-600 px-5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-40"
+              className="whitespace-nowrap rounded-lg bg-sky-600 px-5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-40"
             >
-              Ask
+              {compareMode ? "⚡ Compare A vs B" : "Ask"}
             </button>
           )}
         </form>
 
         {/* example chips (idle only) */}
-        {!running && rounds.length === 0 && !answer && (
+        {!running && !compareRunning && !compareRuns && rounds.length === 0 && !answer && (
           <div className="mt-3 flex flex-wrap gap-2">
             {EXAMPLES.map((ex) => (
               <button
                 key={ex}
                 onClick={() => {
                   setQuestion(ex);
-                  run(ex);
+                  if (compareMode) runCompare(ex);
+                  else run(ex);
                 }}
                 className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-left text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
               >
                 {ex}
               </button>
             ))}
-          </div>
-        )}
-
-        {/* Compare: run the same question under the active config (A) vs a chosen config (B) */}
-        {!running && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            {compareRunning ? (
-              <button
-                type="button"
-                onClick={() => compareAbortRef.current?.abort()}
-                className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
-              >
-                Stop comparison
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => runCompare(question)}
-                  disabled={!question.trim() || status !== "ready"}
-                  title="Run the same question under your current knobs vs the chosen config, side by side"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-zinc-300 transition-colors hover:border-sky-600 hover:text-zinc-100 disabled:opacity-40"
-                >
-                  ⚡ Compare current knobs
-                </button>
-                <span className="text-zinc-500">vs</span>
-                <select
-                  value={configName(compareB)}
-                  onChange={(e) =>
-                    setCompareB(LADDER.find((p) => p.label === e.target.value)?.config ?? LADDER[0].config)
-                  }
-                  className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-zinc-300 outline-none"
-                >
-                  {LADDER.map((p) => (
-                    <option key={p.label} value={p.label}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
           </div>
         )}
       </div>
