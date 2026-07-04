@@ -354,6 +354,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [view, setView] = useState<"ask" | "documents">("ask");
   const [scope, setScope] = useState<Scope>("both");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -454,17 +455,36 @@ export default function Home() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-4">
-      {/* hero (idle only — collapses to the compact header once a query runs) */}
-      {!running && rounds.length === 0 && !answer && <Hero />}
+      {/* tab bar — keeps document upload/management off the Ask (query + trajectory) view */}
+      <nav className="flex items-center gap-1 border-b border-zinc-800 pt-4">
+        {(["ask", "documents"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setView(v)}
+            className={`relative px-3 py-2 text-sm transition-colors ${
+              view === v ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {v === "ask" ? "Ask" : "Documents"}
+            {v === "documents" && uploadedDocs.length > 0 && (
+              <span className="ml-1.5 rounded-full bg-zinc-700 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+                {uploadedDocs.length}
+              </span>
+            )}
+            {view === v && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded bg-sky-500" />}
+          </button>
+        ))}
+      </nav>
 
-      {/* backend connection status — the free demo backend can cold-start (~30–60s) */}
+      {/* backend connection status (both tabs) */}
       {status === "loading" && (
-        <div className="mt-1 mb-1 flex items-center gap-2 text-xs text-zinc-500">
+        <div className="mt-3 mb-1 flex items-center gap-2 text-xs text-zinc-500">
           <Spinner /> Connecting to the backend… the free demo server can take ~30–60s to wake.
         </div>
       )}
       {status === "error" && (
-        <div className="mt-1 mb-1 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="mt-3 mb-1 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           <span>Backend isn&apos;t responding. It may still be starting up.</span>
           <button
             onClick={connect}
@@ -475,29 +495,19 @@ export default function Home() {
         </div>
       )}
 
-      {/* config strip */}
-      {config && (
-        <div className="flex flex-wrap items-center gap-1.5 py-3">
-          <Badge className="text-emerald-400">
-            <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" /> live
-          </Badge>
-          <Badge>model: {config.controller_model}</Badge>
-          <Badge>store: {config.store_provider}</Badge>
-          <Badge>max_rounds: {config.max_rounds}</Badge>
-          <Badge>top_k: {config.top_k}</Badge>
-          <Badge>tools: {config.tools.join(", ")}</Badge>
-          {totalChunks > 0 && <Badge>{sources.length} docs · {totalChunks} chunks</Badge>}
-        </div>
-      )}
-
-      {/* bring-your-own-doc: upload + retrieval scope + manage */}
-      {status === "ready" && (
-        <div className="mb-1 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
+      {/* DOCUMENTS TAB — upload + manage, isolated from the trajectory UI */}
+      {view === "documents" && (
+        <section className="py-6">
+          <h2 className="text-sm font-semibold text-zinc-100">Your documents</h2>
+          <p className="mt-1 max-w-2xl text-sm text-zinc-400">
+            Add your own documents to the corpus, then ask questions about them on the Ask tab.
+            Uploads are shared and can be deleted by anyone.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
+              disabled={uploading || status !== "ready"}
               className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
             >
               {uploading ? (
@@ -519,8 +529,70 @@ export default function Home() {
                 e.target.value = ""; // allow re-selecting the same file
               }}
             />
-            {uploadedDocs.length > 0 && (
-              <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900 p-0.5 text-xs">
+            <span className="text-[11px] text-zinc-600">md · txt · pdf, up to 2 MB</span>
+          </div>
+
+          {uploadError && (
+            <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+              {uploadError}
+            </div>
+          )}
+
+          <div className="mt-4">
+            {uploadedDocs.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-zinc-800 px-4 py-10 text-center text-sm text-zinc-600">
+                No uploaded documents yet.
+              </div>
+            ) : (
+              <div className="divide-y divide-zinc-800/70 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/40">
+                {uploadedDocs.map((d) => (
+                  <div key={d.source} className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-800/40">
+                    <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">
+                      {docName(d.source)}
+                      <span className="text-zinc-600"> · {d.chunks} chunk{d.chunks === 1 ? "" : "s"}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(d.source)}
+                      className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-500/10 hover:text-red-400"
+                      aria-label={`Delete ${docName(d.source)}`}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ASK TAB — query, trajectory, answer, cost */}
+      {view === "ask" && (
+        <>
+          {/* hero (idle only — collapses once a query runs) */}
+          {!running && rounds.length === 0 && !answer && <Hero />}
+
+          {/* config strip */}
+          {config && (
+            <div className="flex flex-wrap items-center gap-1.5 py-3">
+              <Badge className="text-emerald-400">
+                <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" /> live
+              </Badge>
+              <Badge>model: {config.controller_model}</Badge>
+              <Badge>store: {config.store_provider}</Badge>
+              <Badge>max_rounds: {config.max_rounds}</Badge>
+              <Badge>top_k: {config.top_k}</Badge>
+              <Badge>tools: {config.tools.join(", ")}</Badge>
+              {totalChunks > 0 && <Badge>{sources.length} docs · {totalChunks} chunks</Badge>}
+            </div>
+          )}
+
+          {/* scope toggle — controls what a query searches (appears once a doc is uploaded) */}
+          {status === "ready" && uploadedDocs.length > 0 && (
+            <div className="mb-2 flex items-center gap-2 text-xs">
+              <span className="text-zinc-500">Searching:</span>
+              <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
                 {(["both", "uploads", "demo"] as Scope[]).map((s) => (
                   <button
                     key={s}
@@ -534,45 +606,8 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-            )}
-            <span className="text-[11px] text-zinc-600">md · txt · pdf, up to 2 MB</span>
-          </div>
-
-          {uploadError && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
-              {uploadError}
             </div>
           )}
-
-          {uploadedDocs.length > 0 && (
-            <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2">
-              <div className="mb-1 px-1 text-[10px] uppercase tracking-wide text-zinc-500">
-                Uploaded documents · shared &amp; deletable by anyone
-              </div>
-              {uploadedDocs.map((d) => (
-                <div
-                  key={d.source}
-                  className="flex items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800/50"
-                >
-                  <span className="min-w-0 flex-1 truncate text-xs text-zinc-300">
-                    {docName(d.source)}
-                    <span className="text-zinc-600"> · {d.chunks} chunk{d.chunks === 1 ? "" : "s"}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(d.source)}
-                    className="rounded px-1 text-zinc-500 hover:text-red-400"
-                    title="Delete this document"
-                    aria-label={`Delete ${docName(d.source)}`}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* input */}
       <div className="mt-1">
@@ -731,6 +766,8 @@ export default function Home() {
           <Badge>{(done.latency_ms / 1000).toFixed(1)}s</Badge>
           <Badge className="text-amber-300">≈ ${done.est_cost_usd.toFixed(4)}</Badge>
         </section>
+      )}
+        </>
       )}
 
       <Footer />
