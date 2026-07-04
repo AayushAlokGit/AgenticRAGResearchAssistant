@@ -20,6 +20,76 @@ const EXAMPLES = [
   "What are the trade-offs between the Azure and local ChromaDB approaches?",
 ];
 
+const REPO_URL = "https://github.com/AayushAlokGit/AgenticRAGResearchAssistant";
+
+// Inline GitHub mark so we don't pull an icon dependency for one glyph.
+function GitHubIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className={className} fill="currentColor">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
+    </svg>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-800 py-4 text-xs text-zinc-600">
+      <span>Built with Claude</span>
+      <span className="text-zinc-700">·</span>
+      <a
+        href={REPO_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 hover:text-zinc-300"
+      >
+        <GitHubIcon className="h-3 w-3" />
+        Source
+      </a>
+      <span className="text-zinc-700">·</span>
+      <Link href="/methodology" className="hover:text-zinc-300">
+        How it works
+      </Link>
+      <span className="ml-auto">Aayush Alok</span>
+    </footer>
+  );
+}
+
+function Hero() {
+  return (
+    <section className="pt-8 pb-6">
+      <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1 font-mono text-[11px] text-zinc-400">
+        <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        live demo
+      </div>
+      <h1 className="text-3xl font-semibold leading-tight tracking-tight text-zinc-100 sm:text-4xl">
+        An agentic RAG system that shows its work.
+      </h1>
+      <p className="mt-3 max-w-2xl text-[15px] leading-7 text-zinc-400">
+        Ask a multi-hop question about the corpus. Watch the agent{" "}
+        <span className="text-zinc-200">reason → retrieve → re-retrieve</span>, cite its sources, and
+        count every token in real time.
+      </p>
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs">
+        <a
+          href={REPO_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
+        >
+          <GitHubIcon className="h-3.5 w-3.5" />
+          View the source
+        </a>
+        <Link
+          href="/methodology"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-transparent px-1 py-1.5 text-zinc-400 transition-colors hover:text-zinc-100"
+        >
+          How it works →
+        </Link>
+      </div>
+    </section>
+  );
+}
+
 type RoundData = { round: number; think?: ThinkEvent; evidence?: EvidenceEvent };
 
 function upsertRound(
@@ -105,6 +175,15 @@ function AnswerBody({ text, onCite }: { text: string; onCite: (f: string) => voi
 }
 
 // ── small building blocks ─────────────────────────────────────────────────────────────────
+function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden className={`h-3.5 w-3.5 animate-spin ${className}`} fill="none">
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+      <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function Badge({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <span
@@ -259,16 +338,34 @@ export default function Home() {
   const [done, setDone] = useState<DoneEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    getConfig().then(setConfig).catch(() => setError("Backend not reachable — is it running on :8000?"));
-    getSources().then(setSources).catch(() => {});
+  // The demo backend runs on a free Hugging Face Space that sleeps when idle and takes ~30–60s to
+  // wake, so the first /config call can fail a few times before it answers. Retry a handful of
+  // times, then give up and let the user retry manually.
+  const connect = useCallback(async () => {
+    setStatus("loading");
+    for (let attempt = 0; attempt < 15; attempt++) {
+      try {
+        setConfig(await getConfig(AbortSignal.timeout(8000)));
+        getSources().then(setSources).catch(() => {});
+        setStatus("ready");
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+      }
+    }
+    setStatus("error");
   }, []);
+
+  useEffect(() => {
+    connect();
+  }, [connect]);
 
   const run = useCallback(async (q: string) => {
     const query = q.trim();
-    if (!query || running) return;
+    if (!query || running || status !== "ready") return;
     setRunning(true);
     setRounds([]);
     setAnswer(null);
@@ -293,7 +390,7 @@ export default function Home() {
     } finally {
       setRunning(false);
     }
-  }, [running]);
+  }, [running, status]);
 
   const totalChunks = sources.reduce((n, s) => n + s.chunks, 0);
 
@@ -307,16 +404,26 @@ export default function Home() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-4">
-      {/* header */}
-      <header className="sticky top-0 z-20 -mx-4 flex items-center gap-3 border-b border-zinc-800 bg-zinc-950/80 px-4 py-3 backdrop-blur">
-        <div className="flex-1">
-          <h1 className="text-sm font-semibold text-zinc-100">Agentic RAG Research Assistant</h1>
-          <p className="text-xs text-zinc-500">retrieve → reason → retrieve, with citations you can inspect</p>
+      {/* hero (idle only — collapses to the compact header once a query runs) */}
+      {!running && rounds.length === 0 && !answer && <Hero />}
+
+      {/* backend connection status — the free demo backend can cold-start (~30–60s) */}
+      {status === "loading" && (
+        <div className="mt-1 mb-1 flex items-center gap-2 text-xs text-zinc-500">
+          <Spinner /> Connecting to the backend… the free demo server can take ~30–60s to wake.
         </div>
-        <Link href="/methodology" className="text-xs text-zinc-400 hover:text-zinc-100">
-          How it works →
-        </Link>
-      </header>
+      )}
+      {status === "error" && (
+        <div className="mt-1 mb-1 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          <span>Backend isn&apos;t responding. It may still be starting up.</span>
+          <button
+            onClick={connect}
+            className="shrink-0 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1 text-xs text-red-200 hover:bg-red-500/20"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* config strip */}
       {config && (
@@ -360,7 +467,8 @@ export default function Home() {
           ) : (
             <button
               type="submit"
-              disabled={!question.trim()}
+              disabled={!question.trim() || status !== "ready"}
+              title={status !== "ready" ? "Waiting for the backend to be ready…" : undefined}
               className="rounded-lg bg-sky-600 px-5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-40"
             >
               Ask
@@ -452,6 +560,8 @@ export default function Home() {
           <Badge className="text-amber-300">≈ ${done.est_cost_usd.toFixed(4)}</Badge>
         </section>
       )}
+
+      <Footer />
 
       {selectedSource && (
         <SourceDrawer

@@ -6,8 +6,8 @@ import { ConfigInfo, SourceInfo, StreamEvent } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
 
-export async function getConfig(): Promise<ConfigInfo> {
-  const r = await fetch(`${BASE}/config`);
+export async function getConfig(signal?: AbortSignal): Promise<ConfigInfo> {
+  const r = await fetch(`${BASE}/config`, { signal });
   if (!r.ok) throw new Error(`/config ${r.status}`);
   return r.json();
 }
