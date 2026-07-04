@@ -52,3 +52,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/mcp.json
+
+# Local test fixtures (may contain personal docs — never commit)
+test files/
