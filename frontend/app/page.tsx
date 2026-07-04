@@ -541,7 +541,6 @@ function RunView({
           <Badge>{done.rounds} rounds</Badge>
           <Badge>{done.total_tokens} tok</Badge>
           <Badge>{(done.latency_ms / 1000).toFixed(1)}s</Badge>
-          <Badge className="text-amber-300">≈ ${done.est_cost_usd.toFixed(4)}</Badge>
         </section>
       )}
     </div>
