@@ -20,6 +20,29 @@ reverted**, and the negative results were *kept and documented*. The point isn't
 it's the engineering discipline of treating a system that fails silently (a fluent wrong
 answer looks exactly like a fluent right one) as a measured experiment.
 
+## Live demo
+
+**▶ Try it — [agentic-rag-research-assistant-green.vercel.app](https://agentic-rag-research-assistant-green.vercel.app)**
+
+<!-- TODO: drop a screenshot or GIF of the streaming trajectory / compare view here, e.g.
+     ![Agentic RAG demo](docs/images/demo.png) — GitHub lets you drag-and-drop it straight into this file. -->
+
+A Next.js frontend (Vercel) streaming the agent's trajectory over Server-Sent Events from a FastAPI
+backend (Hugging Face Space, Docker). You can:
+
+- **Ask a multi-hop question** and watch it *reason → retrieve → re-retrieve*, cite every source, and
+  count tokens/cost in real time — each retrieved chunk is inspectable.
+- **Bring your own document** (`md` / `txt` / `pdf`) — it's indexed live and you can query it, with a
+  scope toggle for demo corpus / your uploads / both.
+- **Compare Basic RAG vs the Full System** on the same question, side by side — the eval knob-ladder
+  made interactive.
+
+> **Deployed stack vs local.** The hosted demo runs on **Postgres + pgvector (Neon)** with **Gemini
+> embeddings** — durable storage that outlives an ephemeral host. Local development uses **ChromaDB +
+> local `all-MiniLM-L6-v2`** (the naive baseline in the diagram below); both sit behind the same
+> `build_store` / `build_embedder` interface and are swapped by config. The free demo backend sleeps
+> when idle, so the first request after a lull takes ~30–60s to wake.
+
 ```mermaid
 flowchart LR
   I[ingest<br/>content-hash idempotency] --> S[ChromaDB<br/>+ local MiniLM]

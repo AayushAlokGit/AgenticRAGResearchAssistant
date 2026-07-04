@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Frontend — Agentic RAG Research Assistant
 
-## Getting Started
+The Next.js (App Router) frontend for the live demo. It streams the agent's trajectory from the
+FastAPI backend over Server-Sent Events and renders it as an inspectable timeline: each controller
+turn's reasoning, the searches it runs, the exact chunks it retrieved (click a citation to see the
+chunk the model was given), the grounded answer, and a live token/cost meter.
 
-First, run the development server:
+**Live:** [agentic-rag-research-assistant-green.vercel.app](https://agentic-rag-research-assistant-green.vercel.app)
+· Project overview + the engineering story: [`../README.md`](../README.md).
+
+## Features
+
+- **Ask** — multi-hop question → streamed reason→retrieve→re-retrieve trajectory + cited answer.
+- **Documents tab** — upload your own `md`/`txt`/`pdf`, indexed live; delete anytime. A scope toggle
+  (demo corpus / your uploads / both) controls what a query searches.
+- **Compare** — run the same question under *Basic RAG* vs the *Full System* side by side.
+
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev          # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The backend base URL comes from `NEXT_PUBLIC_BACKEND_URL`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `.env.local` → `http://127.0.0.1:8000` for a local backend (run `uvicorn agentic_rag.server.app:app
+  --port 8000` from the repo root). Note the backend's CORS allowlist defaults to `localhost:3000`, so
+  run the frontend on port 3000.
+- `.env.production` → the deployed Hugging Face Space URL (baked into the Vercel build).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Key files
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `app/page.tsx` — the whole single-page app: tabs, hero, streaming trajectory, compare view, upload/manage.
+- `app/methodology/page.tsx` — the "how it works" page.
+- `lib/api.ts` — backend client; the interesting part is `askStream`, which parses the SSE framing by hand.
+- `lib/types.ts` — wire types mirroring the backend's Pydantic schemas (`agentic_rag/server/schemas.py`).

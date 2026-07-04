@@ -97,6 +97,11 @@ function Hero() {
         <span className="text-zinc-200">reason → retrieve → re-retrieve</span>, cite its sources, and
         count every token in real time.
       </p>
+      <p className="mt-3 text-xs text-zinc-500">
+        Measured, not vibes:{" "}
+        <span className="text-zinc-300">+24 pts answer accuracy</span> from the retrieval architecture
+        (0.53 → 0.77) and faithfulness 0.89 → 0.97 on the eval set — every technique earned its place.
+      </p>
       <div className="mt-4 flex flex-wrap items-center gap-3 text-xs">
         <a
           href={REPO_URL}
