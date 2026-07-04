@@ -20,6 +20,7 @@ dependencies = [
     "google-genai>=1.0",            # LLM provider (generator) — Gemini via the unified SDK
     "python-dotenv>=1.0",           # load GOOGLE_API_KEY / GROQ_API_KEY from a gitignored .env
     "pydantic>=2.0",                # typed tool-arg schemas for the agent's tool registry (A1)
+    "langgraph>=1.0",               # the agent loop's LangGraph twin (capstone; agent/graph.py)
     # --- deploy: the pgvector store + the demo backend (server/) ---
     "psycopg[binary,pool]>=3.2",    # Postgres client + connection pool for the pgvector store
     "pgvector>=0.3",                # pgvector type adapters (Vector binding, cosine <=> search)
