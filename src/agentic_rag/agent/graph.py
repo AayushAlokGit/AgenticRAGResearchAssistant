@@ -27,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from agentic_rag.agent.loop import (OSCILLATION_PATIENCE, AgentStep, Decision, Scratchpad,
                                     answer_from_evidence, decide_next_action, provenance_label)
 from agentic_rag.agent.tools import ToolContext
-from agentic_rag.harness.guardrails import check_citation_grounding, spend_cap_tripped
+from agentic_rag.harness.guardrails import check_citation_grounding, snap_citations, spend_cap_tripped
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.vector_store import Hit
 
@@ -231,6 +231,7 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
         scratchpad = Scratchpad(hits=list(state["evidence"]))
         result = answer_from_evidence(state["question"], scratchpad, retriever, generator_llm,
                                       answer_prompt, top_k, answer_char_budget, ordering)
+        result.answer = snap_citations(result.answer, result.retrieved)   # repair typo'd citations first
         grounding = check_citation_grounding(result.answer, result.retrieved)
         return {
             "answer": result.answer,

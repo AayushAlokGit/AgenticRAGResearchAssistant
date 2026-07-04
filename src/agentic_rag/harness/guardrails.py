@@ -15,6 +15,7 @@ Keeping the decisions pure is what makes them unit-testable with no API and no l
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Set
@@ -91,3 +92,31 @@ def check_citation_grounding(answer: str, retrieved: List["Hit"]) -> GroundingRe
     cited = extract_citations(answer)
     available = {hit.source for hit in retrieved}
     return GroundingResult(cited=cited, available=available, ungrounded=cited - available)
+
+
+# The valid citation targets are known exactly (the retrieved sources), so a cited name that isn't
+# among them and is *almost* one is a generator typo (e.g. `PRINCIPALS` for `PRINCIPLES`), not a real
+# fabrication. difflib.get_close_matches is the trusted commodity for "nearest string in a set"; the
+# 0.8 cutoff is tight enough that a genuinely-invented citation (far from every source) is NOT snapped
+# and stays flagged by check_citation_grounding — we correct typos without masking hallucinations.
+_SNAP_CUTOFF = 0.8
+
+
+def snap_citations(answer: str, retrieved: List["Hit"]) -> str:
+    """Correct near-miss cited filenames to the exact retrieved source they typo, in the answer text.
+
+    Only touches citations that are NOT already grounded (a name absent from the retrieved set) and
+    only when a single close match exists above the cutoff — so it strictly repairs, never invents.
+    Run this BEFORE check_citation_grounding so the grounding verdict reflects the corrected text.
+    """
+    available = {hit.source for hit in retrieved}
+    if not available:
+        return answer
+    corrected = answer
+    for name in extract_citations(answer):
+        if name in available:
+            continue
+        match = difflib.get_close_matches(name, available, n=1, cutoff=_SNAP_CUTOFF)
+        if match:
+            corrected = corrected.replace(name, match[0])
+    return corrected

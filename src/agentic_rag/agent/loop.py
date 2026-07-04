@@ -41,7 +41,7 @@ from pydantic import BaseModel, ValidationError
 
 from agentic_rag.agent.tools import DEFAULT_TOOLS, Tool, ToolContext, ToolRegistry, build_registry
 from agentic_rag.context import order_evidence
-from agentic_rag.harness.guardrails import check_citation_grounding, spend_cap_tripped
+from agentic_rag.harness.guardrails import check_citation_grounding, snap_citations, spend_cap_tripped
 from agentic_rag.llm.provider import Usage
 from agentic_rag.rag.answer import (AnswerResult, Trajectory, assemble_context, generate_answer,
                                     load_prompt)
@@ -513,7 +513,9 @@ def run_agent(question: str, retriever, llm, react_prompt: str, answer_prompt: s
     # evidence the generator saw (result.retrieved = the trimmed+ordered window). A cited file that
     # isn't there is a fabricated citation — we RECORD and warn, but return the answer unchanged
     # (observe-before-enforce). This is the cheap deterministic check; the eval's LLM faithfulness
-    # judge is the offline complement.
+    # judge is the offline complement. First snap near-miss citations (generator typos) onto the exact
+    # retrieved source, so a mere misspelling isn't reported as a fabrication.
+    result.answer = snap_citations(result.answer, result.retrieved)
     grounding = check_citation_grounding(result.answer, result.retrieved)
     result.trajectory.grounded = grounding.is_grounded
     result.trajectory.ungrounded_citations = sorted(grounding.ungrounded)
