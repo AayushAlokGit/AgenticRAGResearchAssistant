@@ -9,10 +9,26 @@ import type {
   ConfigInfo,
   DoneEvent,
   EvidenceEvent,
+  Knobs,
   Scope,
   SourceInfo,
+  StreamEvent,
   ThinkEvent,
 } from "@/lib/types";
+
+// The two presets the Compare view runs side by side — the eval knob-ladder made interactive.
+const COMPARE_PRESETS: { title: string; subtitle: string; knobs: Knobs }[] = [
+  {
+    title: "Basic RAG",
+    subtitle: "dense · single-shot",
+    knobs: { mode: "dense", rerank: false, parent_expansion: false, max_rounds: 1 },
+  },
+  {
+    title: "Full System",
+    subtitle: "hybrid + rerank + parent-expansion + agentic loop",
+    knobs: { mode: "hybrid", rerank: true, parent_expansion: true },
+  },
+];
 
 const EXAMPLES = [
   "What embedding model does the system use and why is it kept local?",
@@ -342,6 +358,137 @@ function SourceDrawer({
   );
 }
 
+// ── one run's live state (trajectory + answer + cost) — reused for single ask AND each compare column
+type RunState = {
+  rounds: RoundData[];
+  answer: AnswerEvent | null;
+  done: DoneEvent | null;
+  error: string | null;
+  running: boolean;
+};
+
+const EMPTY_RUN: RunState = { rounds: [], answer: null, done: null, error: null, running: false };
+
+function RunView({
+  run,
+  onOpenSource,
+  title,
+  subtitle,
+}: {
+  run: RunState;
+  onOpenSource: (s: string) => void;
+  title?: string;
+  subtitle?: string;
+}) {
+  const { rounds, answer, done, error, running } = run;
+  return (
+    <div>
+      {title && (
+        <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b border-zinc-800 pb-2">
+          <h3 className="text-sm font-semibold text-zinc-100">{title}</h3>
+          {subtitle && <span className="text-[11px] text-zinc-500">{subtitle}</span>}
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {error}
+        </div>
+      )}
+
+      {/* trajectory */}
+      {rounds.length > 0 && (
+        <section className="mb-4">
+          <div className="mb-2 flex items-center gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Agent trajectory</h2>
+            {running && <span className="text-xs text-sky-400">streaming…</span>}
+          </div>
+          <div>
+            {[...rounds]
+              .sort((a, b) => a.round - b.round)
+              .map((r, i, all) => {
+                const isLast = i === all.length - 1;
+                const isActive = running && isLast;
+                const isFinish = !!r.think?.finish;
+                return (
+                  <div key={r.round} className="flex gap-3 pb-3 last:pb-0">
+                    <div className="flex flex-col items-center">
+                      <span
+                        className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] ${
+                          isFinish
+                            ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                            : isActive
+                              ? "border-sky-500/50 bg-sky-500/15 text-sky-300"
+                              : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                        }`}
+                      >
+                        {isActive && (
+                          <span className="absolute inset-0 animate-ping rounded-full bg-sky-500/30" />
+                        )}
+                        <span className="relative">{r.round}</span>
+                      </span>
+                      {!isLast && <span className="w-px flex-1 bg-zinc-800" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <RoundCard data={r} active={isActive} onOpenSource={onOpenSource} />
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </section>
+      )}
+
+      {/* answer */}
+      {answer && (
+        <section className="mb-4">
+          <div className="mb-2 flex items-center gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Answer</h2>
+            {answer.grounded ? (
+              <Badge className="text-emerald-400">grounded ✓</Badge>
+            ) : (
+              <Badge className="border-red-500/40 text-red-400">ungrounded citations</Badge>
+            )}
+          </div>
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+            <AnswerBody text={answer.text} onCite={onOpenSource} />
+            {!answer.grounded && answer.ungrounded.length > 0 && (
+              <p className="mt-3 text-xs text-red-400">
+                cited but not retrieved: {answer.ungrounded.join(", ")}
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* couldn't-answer empty state */}
+      {done && !answer && !error && (
+        <section className="mb-4">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+            The agent stopped before it could answer
+            {done.exit_reason !== "finish" && <> (hit its {done.exit_reason.replace("_", " ")} limit)</>}.
+            Try rephrasing, or ask something the corpus actually covers.
+          </div>
+        </section>
+      )}
+
+      {/* cost meter */}
+      {done && (
+        <section className="flex flex-wrap items-center gap-1.5">
+          {done.total_tokens === 0 && (
+            <Badge className="border-sky-500/40 text-sky-300">cached ✓ · served free</Badge>
+          )}
+          <Badge className={EXIT_STYLES[done.exit_reason] ?? ""}>exit: {done.exit_reason}</Badge>
+          <Badge>{done.rounds} rounds</Badge>
+          <Badge>{done.total_tokens} tok</Badge>
+          <Badge>{(done.latency_ms / 1000).toFixed(1)}s</Badge>
+          <Badge className="text-amber-300">≈ ${done.est_cost_usd.toFixed(4)}</Badge>
+        </section>
+      )}
+    </div>
+  );
+}
+
 // ── page ───────────────────────────────────────────────────────────────────────────────────
 export default function Home() {
   const [config, setConfig] = useState<ConfigInfo | null>(null);
@@ -358,7 +505,9 @@ export default function Home() {
   const [scope, setScope] = useState<Scope>("both");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [compareRuns, setCompareRuns] = useState<[RunState, RunState] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const compareAbortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // The demo backend runs on a free Hugging Face Space that sleeps when idle and takes ~30–60s to
@@ -386,6 +535,7 @@ export default function Home() {
   const run = useCallback(async (q: string) => {
     const query = q.trim();
     if (!query || running || status !== "ready") return;
+    setCompareRuns(null); // leave compare mode when running a single ask
     setRunning(true);
     setRounds([]);
     setAnswer(null);
@@ -412,6 +562,49 @@ export default function Home() {
       setRunning(false);
     }
   }, [running, status, scope]);
+
+  // Run the SAME question under both presets in parallel — the visible "Basic vs Full System" proof.
+  const runCompare = useCallback(async (q: string) => {
+    const query = q.trim();
+    if (!query || running || status !== "ready") return;
+    setRounds([]);
+    setAnswer(null);
+    setDone(null);
+    setError(null);
+    setCompareRuns([{ ...EMPTY_RUN, running: true }, { ...EMPTY_RUN, running: true }]);
+    const controller = new AbortController();
+    compareAbortRef.current = controller;
+
+    const update = (idx: 0 | 1, fn: (rs: RunState) => RunState) =>
+      setCompareRuns((prev) => {
+        if (!prev) return prev;
+        const next: [RunState, RunState] = [prev[0], prev[1]];
+        next[idx] = fn(next[idx]);
+        return next;
+      });
+
+    const onEvent = (idx: 0 | 1) => (e: StreamEvent) =>
+      update(idx, (rs) => {
+        if (e.type === "think") return { ...rs, rounds: upsertRound(rs.rounds, e.round, (r) => ({ ...r, think: e })) };
+        if (e.type === "evidence") return { ...rs, rounds: upsertRound(rs.rounds, e.round, (r) => ({ ...r, evidence: e })) };
+        if (e.type === "answer") return { ...rs, answer: e };
+        if (e.type === "done") return { ...rs, done: e, running: false };
+        if (e.type === "error") return { ...rs, error: e.message, running: false };
+        return rs;
+      });
+
+    const stream = (idx: 0 | 1) =>
+      askStream(query, onEvent(idx), controller.signal, { scope, knobs: COMPARE_PRESETS[idx].knobs })
+        .catch((err) => {
+          if ((err as Error).name !== "AbortError")
+            update(idx, (rs) => ({ ...rs, error: String(err) }));
+        })
+        .finally(() => update(idx, (rs) => ({ ...rs, running: false })));
+
+    await Promise.all([stream(0), stream(1)]);
+  }, [running, status, scope]);
+
+  const compareRunning = !!compareRuns && compareRuns.some((r) => r.running);
 
   const refreshSources = useCallback(() => {
     getSources().then(setSources).catch(() => {});
@@ -662,110 +855,67 @@ export default function Home() {
             ))}
           </div>
         )}
+
+        {/* Compare: run the same question under Basic vs Full presets, side by side */}
+        {!running && (
+          <div className="mt-2">
+            {compareRunning ? (
+              <button
+                type="button"
+                onClick={() => compareAbortRef.current?.abort()}
+                className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700"
+              >
+                Stop comparison
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => runCompare(question)}
+                disabled={!question.trim() || status !== "ready"}
+                title="Run the same question with Basic RAG and the Full System, side by side"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:border-sky-600 hover:text-zinc-100 disabled:opacity-40"
+              >
+                ⚡ Compare: Basic RAG vs Full System
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {error && (
-        <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
-
-      {/* trajectory */}
-      {rounds.length > 0 && (
-        <section className="mt-6">
-          <div className="mb-2 flex items-center gap-2">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Agent trajectory
-            </h2>
-            {running && <span className="text-xs text-sky-400">streaming…</span>}
-          </div>
-          <div>
-            {[...rounds]
-              .sort((a, b) => a.round - b.round)
-              .map((r, i, all) => {
-                const isLast = i === all.length - 1;
-                const isActive = running && isLast;
-                const isFinish = !!r.think?.finish;
-                return (
-                  <div key={r.round} className="flex gap-3 pb-3 last:pb-0">
-                    {/* timeline rail: node + line to the next round */}
-                    <div className="flex flex-col items-center">
-                      <span
-                        className={`relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] ${
-                          isFinish
-                            ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
-                            : isActive
-                              ? "border-sky-500/50 bg-sky-500/15 text-sky-300"
-                              : "border-zinc-700 bg-zinc-800 text-zinc-400"
-                        }`}
-                      >
-                        {isActive && (
-                          <span className="absolute inset-0 animate-ping rounded-full bg-sky-500/30" />
-                        )}
-                        <span className="relative">{r.round}</span>
-                      </span>
-                      {!isLast && <span className="w-px flex-1 bg-zinc-800" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <RoundCard data={r} active={isActive} onOpenSource={setSelectedSource} />
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-        </section>
-      )}
-
-      {/* answer */}
-      {answer && (
-        <section className="mt-6">
-          <div className="mb-2 flex items-center gap-2">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Answer</h2>
-            {answer.grounded ? (
-              <Badge className="text-emerald-400">grounded ✓</Badge>
-            ) : (
-              <Badge className="border-red-500/40 text-red-400">ungrounded citations</Badge>
-            )}
-          </div>
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-            <AnswerBody text={answer.text} onCite={setSelectedSource} />
-            {!answer.grounded && answer.ungrounded.length > 0 && (
-              <p className="mt-3 text-xs text-red-400">
-                cited but not retrieved: {answer.ungrounded.join(", ")}
-              </p>
-            )}
-          </div>
-          <p className="mt-2 text-xs text-zinc-600">
-            Tip: click a citation to see the exact chunk the model was given.
+      {/* results: single run, or the Basic-vs-Full compare (two columns) */}
+      {compareRuns ? (
+        <div className="mb-10 mt-6">
+          <p className="mb-3 text-xs text-zinc-500">
+            Same question, two pipelines — <span className="text-zinc-300">Basic RAG</span> vs the{" "}
+            <span className="text-zinc-300">Full System</span>. Watch how the retrieval stack changes the answer.
           </p>
-        </section>
-      )}
-
-      {/* couldn't-answer empty state: run finished but the agent stopped before producing an answer */}
-      {done && !answer && !error && (
-        <section className="mt-6">
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
-            The agent stopped before it could answer
-            {done.exit_reason !== "finish" && <> (hit its {done.exit_reason.replace("_", " ")} limit)</>}.
-            Try rephrasing, or ask something the corpus actually covers.
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+            <RunView
+              run={compareRuns[0]}
+              onOpenSource={setSelectedSource}
+              title={COMPARE_PRESETS[0].title}
+              subtitle={COMPARE_PRESETS[0].subtitle}
+            />
+            <RunView
+              run={compareRuns[1]}
+              onOpenSource={setSelectedSource}
+              title={COMPARE_PRESETS[1].title}
+              subtitle={COMPARE_PRESETS[1].subtitle}
+            />
           </div>
-        </section>
-      )}
-
-      {/* cost meter */}
-      {done && (
-        <section className="mt-4 mb-10 flex flex-wrap items-center gap-1.5">
-          {done.total_tokens === 0 && (
-            <Badge className="border-sky-500/40 text-sky-300">cached ✓ · served free</Badge>
+        </div>
+      ) : (
+        <div className="mb-10 mt-6">
+          <RunView
+            run={{ rounds, answer, done, error, running }}
+            onOpenSource={setSelectedSource}
+          />
+          {answer && (
+            <p className="mt-2 text-xs text-zinc-600">
+              Tip: click a citation to see the exact chunk the model was given.
+            </p>
           )}
-          <Badge className={EXIT_STYLES[done.exit_reason] ?? ""}>exit: {done.exit_reason}</Badge>
-          <Badge>{done.rounds} rounds</Badge>
-          <Badge>ctrl {done.controller_tokens} tok</Badge>
-          <Badge>gen {done.generator_tokens} tok</Badge>
-          <Badge>{done.total_tokens} total tok</Badge>
-          <Badge>{(done.latency_ms / 1000).toFixed(1)}s</Badge>
-          <Badge className="text-amber-300">≈ ${done.est_cost_usd.toFixed(4)}</Badge>
-        </section>
+        </div>
       )}
         </>
       )}
