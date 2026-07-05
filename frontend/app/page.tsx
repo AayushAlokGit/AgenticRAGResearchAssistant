@@ -206,7 +206,10 @@ function renderInline(
   key: string,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const citationRe = /\[([^\][]+?\.[A-Za-z0-9]+)\]/g;
+  // Citation = [filename.ext]; ext must start with a letter so a decimal like [see 2.1] isn't a chip.
+  // Body stays permissive ([^\][]) so it catches spaces, an `upload:` prefix, parens, etc. (mirrors
+  // the backend extract_citations filter that drives the grounding check).
+  const citationRe = /\[([^\][]+?\.[A-Za-z][A-Za-z0-9]*)\]/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
