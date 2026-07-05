@@ -2,6 +2,7 @@
 // Events, but EventSource only does GET and we POST the question, so we read the fetch body as a
 // stream and parse the SSE framing (blank-line-delimited `data:` blocks) by hand.
 
+import { logEvent, newRequestId } from "./log";
 import { ConfigInfo, Knobs, Scope, SourceInfo, StreamEvent, UploadResponse } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
@@ -48,16 +49,20 @@ export async function askStream(
   signal?: AbortSignal,
   opts?: { scope?: Scope; knobs?: Knobs },
 ): Promise<void> {
+  const reqId = newRequestId();
   const body: Record<string, unknown> = { question };
   if (opts?.scope) body.scope = opts.scope;
   if (opts?.knobs) body.knobs = opts.knobs;
+  logEvent(reqId, "▶ /ask", { question, scope: opts?.scope ?? "both", knobs: opts?.knobs });
   const resp = await fetch(`${BASE}/ask`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // X-Request-Id lets the backend adopt this id, so browser console + HF Space logs share it.
+    headers: { "Content-Type": "application/json", "X-Request-Id": reqId },
     body: JSON.stringify(body),
     signal,
   });
   if (!resp.ok || !resp.body) {
+    logEvent(reqId, "✗ http error", { status: resp.status });
     onEvent({ type: "error", message: `Backend returned ${resp.status}` });
     return;
   }
@@ -83,10 +88,31 @@ export async function askStream(
         .join("");
       if (!data) continue; // keep-alive ping comments (": ping") carry no data line
       try {
-        onEvent(JSON.parse(data) as StreamEvent);
+        const event = JSON.parse(data) as StreamEvent;
+        logEvent(reqId, event.type, summarizeEvent(event));
+        onEvent(event);
       } catch {
         // ignore a malformed frame rather than kill the stream
       }
     }
+  }
+}
+
+// Compact one-line summary per SSE event for the console trace — the shape of each step, not its full
+// payload (answer text / chunk bodies are omitted; the UI renders those).
+function summarizeEvent(e: StreamEvent): Record<string, unknown> {
+  switch (e.type) {
+    case "think":
+      return { round: e.round, actions: e.actions.map((a) => a.tool), finish: e.finish,
+               controller_tokens: e.controller_tokens };
+    case "evidence":
+      return { round: e.round, chunks: e.chunks.length, new: e.new_count, redundant: e.redundant };
+    case "answer":
+      return { chars: e.text.length, citations: e.citations, grounded: e.grounded };
+    case "done":
+      return { rounds: e.rounds, exit: e.exit_reason, total_tokens: e.total_tokens,
+               latency_ms: e.latency_ms };
+    case "error":
+      return { message: e.message };
   }
 }

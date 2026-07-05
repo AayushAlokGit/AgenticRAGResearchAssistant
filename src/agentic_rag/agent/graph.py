@@ -34,6 +34,12 @@ from agentic_rag.rag.vector_store import Hit
 logger = logging.getLogger(__name__)
 
 
+def _action_repr(decision) -> str:
+    """`search(query=...)` — one retrieval action rendered for the trace log."""
+    args = ", ".join(f"{key}={value}" for key, value in decision.args.model_dump().items())
+    return f"{decision.tool.name}({args})"
+
+
 # ── Reducers ──────────────────────────────────────────────────────────────────────────
 # A reducer decides how a state field MERGES when a node returns an update for it. No
 # reducer = OVERWRITE (last write wins); a reducer lets updates ACCUMULATE. These three are
@@ -164,6 +170,22 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
                 finish = turn.decisions[0]
                 update["exit_reason"] = "finish"
                 update["steps"] = [AgentStep(finish.thought, "finish", observation="(finish)")]
+
+        # ── trace: what the controller decided this round (the deployed graph path is otherwise silent) ──
+        round_no = update["rounds"]
+        thoughts = " | ".join(dict.fromkeys(d.thought for d in turn.decisions if d.thought))
+        if thoughts:
+            logger.info("graph: round %d/%d think: %s", round_no, max_rounds, thoughts)
+        if update.get("seeded_on_empty"):
+            logger.info("graph: round %d/%d controller chose FINISH with no evidence — empty-finish "
+                        "guard seeded a search", round_no, max_rounds)
+        elif update["pending"]:
+            actions = "; ".join(_action_repr(d) for d in update["pending"])
+            logger.info("graph: round %d/%d controller -> %d action(s): %s",
+                        round_no, max_rounds, len(update["pending"]), actions)
+        else:
+            logger.info("graph: round %d/%d controller -> FINISH (evidence judged sufficient)",
+                        round_no, max_rounds)
         return update
 
     def tools_node(state: AgentState) -> dict:
@@ -196,8 +218,11 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
             args_repr = ", ".join(f"{k}={v}" for k, v in d.args.model_dump().items())
             steps.append(AgentStep(d.thought, d.tool.name, args_repr, result.observation, action_new))
             counts[d.tool.name] = counts.get(d.tool.name, 0) + 1
+            logger.info("graph: -> %s(%s) | +%d new chunk(s)", d.tool.name, args_repr, action_new)
 
         update: dict = {"evidence": new_hits, "steps": steps, "tool_calls": counts}
+        logger.info("graph: tools round done — %d action(s), +%d new chunk(s) (scratchpad now %d)",
+                    len(state["pending"]), round_new, len(state["evidence"]) + round_new)
 
         # OSCILLATION GUARD: a round that RETURNED hits but added NOTHING new is redundant. Feed the
         # signal back onto the last step (so the controller sees it next round) and track the streak;
@@ -211,6 +236,11 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
             update["redundant_searches"] = 1   # delta; the reducer sums it into the running total
             if consecutive >= OSCILLATION_PATIENCE:
                 update["exit_reason"] = "oscillation"
+                logger.info("graph: %d redundant round(s) in a row — stopping (oscillation guard)",
+                            consecutive)
+            else:
+                logger.info("graph: round re-found only known evidence (%d/%d before stop) — continuing",
+                            consecutive, OSCILLATION_PATIENCE)
         elif round_new:
             update["consecutive_redundant"] = 0   # progress clears the streak
 
@@ -222,6 +252,8 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
         # Cost wins over oscillation, so this override comes last.
         if spend_cap_tripped(state["controller_usage"], spend_cap_tokens):
             update["exit_reason"] = "spend_cap"
+            logger.info("graph: controller spend-cap reached (%d >= %d tokens) — stopping (spend_cap guard)",
+                        state["controller_usage"].total_tokens, spend_cap_tokens)
         return update
 
     def answer_node(state: AgentState) -> dict:
@@ -233,6 +265,12 @@ def make_nodes(retriever, controller_llm, generator_llm, registry, store,
                                       answer_prompt, top_k, answer_char_budget, ordering)
         result.answer = snap_citations(result.answer, result.retrieved)   # repair typo'd citations first
         grounding = check_citation_grounding(result.answer, result.retrieved)
+        logger.info("graph: answer ready — %d char(s) from %d chunk(s), %d generator token(s), grounded=%s",
+                    len(result.answer), len(result.retrieved), result.generator_usage.total_tokens,
+                    grounding.is_grounded)
+        if not grounding.is_grounded:
+            logger.warning("graph: OUTPUT-ring guardrail — answer cites source(s) NOT in evidence: %s",
+                           sorted(grounding.ungrounded))
         return {
             "answer": result.answer,
             "retrieved": result.retrieved,

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -25,11 +26,39 @@ from sse_starlette.sse import EventSourceResponse
 from agentic_rag.rag.upload import (ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, display_name, ingest_bytes,
                                     is_upload)
 from agentic_rag.server.deps import build_app_state, build_scoped_graph, rebuild_default_graph
+from agentic_rag.server.request_context import (RequestContextFilter, RequestContextMiddleware,
+                                                current_client_ip)
 from agentic_rag.server.schemas import (AskRequest, ConfigResponse, ErrorEvent, HealthResponse,
                                         SourceInfo, SourcesResponse, UploadResponse)
 from agentic_rag.server.stream import stream_events
 
 logger = logging.getLogger(__name__)
+
+# Container stdout is the only log surface on HF Spaces, so every request-scoped line carries its
+# [req_id] for grep-one-request tracing (RequestContextFilter fills it in; "-" outside a request).
+_LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s [%(req_id)s] | %(message)s"
+
+# Third-party loggers that would drown our own trace at INFO (mirrors logging_setup._NOISY_LIBRARIES).
+_NOISY_LIBRARIES = ["httpx", "httpcore", "urllib3", "chromadb", "sentence_transformers",
+                    "transformers", "huggingface_hub", "groq"]
+
+
+def _configure_server_logging() -> None:
+    """One stdout handler for the root logger, req-id-aware. Explicit (not basicConfig) so the format
+    is deterministic under uvicorn and every record gets the correlation id via the filter."""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+
+    handler = logging.StreamHandler(stream=sys.stdout)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    handler.addFilter(RequestContextFilter())  # stamps req_id/client_ip onto every record it formats
+    root.addHandler(handler)
+
+    for name in _NOISY_LIBRARIES:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 _RESTING_MESSAGE = (
     "The demo has reached today's shared usage budget and is resting to stay free. "
@@ -38,7 +67,7 @@ _RESTING_MESSAGE = (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _configure_server_logging()
     logger.info("server: building app state (graph + retriever + store) ...")
     app.state.deps = build_app_state()
     logger.info("server: ready")
@@ -46,6 +75,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agentic RAG Research Assistant — demo API", lifespan=lifespan)
+
+# Correlation id + client IP for every request (must wrap the app closest to the ASGI layer so it
+# covers the streaming /ask body — see request_context for why it's pure ASGI, not BaseHTTPMiddleware).
+app.add_middleware(RequestContextMiddleware)
 
 # CORS: the Next.js frontend calls this from a different origin. Locked to an allowlist (localhost for
 # dev, the Vercel origins in prod via FRONTEND_ORIGINS="https://a.com,https://b.com").
@@ -115,6 +148,7 @@ def upload(file: UploadFile = File(...)):
     """
     deps = app.state.deps
     name = file.filename or "document"
+    logger.info("▶ /upload received | ip=%s file=%s", current_client_ip(), name)
     if not name.lower().endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=415,
                             detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
@@ -127,6 +161,8 @@ def upload(file: UploadFile = File(...)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     rebuild_default_graph(deps)   # refresh BM25 so the upload is keyword-searchable, not just dense
+    logger.info("◀ /upload done | source=%s chunks=%d total_chunks=%d",
+                result["source"], result["chunks"], deps.store.count())
     return UploadResponse(source=result["source"], name=display_name(result["source"]),
                           chunks=result["chunks"], total_chunks=deps.store.count())
 
@@ -135,11 +171,13 @@ def upload(file: UploadFile = File(...)):
 def delete_document(source: str):
     """Delete one UPLOADED document (seed corpus is protected — only ``upload:``-marked sources)."""
     deps = app.state.deps
+    logger.info("▶ /documents DELETE | ip=%s source=%s", current_client_ip(), source)
     if not is_upload(source):
         raise HTTPException(status_code=403,
                             detail="Only uploaded documents can be deleted; the seed corpus is protected.")
     deps.store.delete_by_source(source)
     rebuild_default_graph(deps)
+    logger.info("◀ /documents DELETE done | source=%s total_chunks=%d", source, deps.store.count())
     return {"deleted": source, "total_chunks": deps.store.count()}
 
 
@@ -155,9 +193,11 @@ def _ask_stream(graph, question: str, max_rounds: int, budget):
         for event in stream_events(graph, question, max_rounds):
             if event.type == "done":
                 spent = event.total_tokens
+                logger.info("/ask done | rounds=%d exit=%s tokens=%d latency_ms=%d",
+                            event.rounds, event.exit_reason, event.total_tokens, event.latency_ms)
             yield _sse(event)
     except Exception as exc:
-        logger.exception("server: /ask stream failed")
+        logger.exception("/ask stream failed")
         yield _sse(ErrorEvent(message=str(exc)))
     finally:
         if budget is not None:
@@ -167,7 +207,12 @@ def _ask_stream(graph, question: str, max_rounds: int, budget):
 @app.post("/ask")
 def ask(req: AskRequest):
     deps = app.state.deps
+    scoped = req.scope != "both" or req.knobs is not None
+    logger.info("▶ /ask received | ip=%s scope=%s graph=%s knobs=%s | Q: %.200s",
+                current_client_ip(), req.scope, "scoped" if scoped else "default",
+                req.knobs.model_dump() if req.knobs else None, req.question)
     if deps.budget is not None and deps.budget.is_exhausted():
+        logger.info("/ask refused — daily token budget exhausted (resting)")
         return EventSourceResponse(iter([_sse(ErrorEvent(message=_RESTING_MESSAGE))]))
 
     # Default fast path reuses the prebuilt graph; a scope toggle or knob override (Compare / Advanced)
