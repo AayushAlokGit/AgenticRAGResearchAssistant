@@ -30,6 +30,8 @@ class AppState:
     max_rounds: int
     model_names: dict      # {"controller": ..., "generator": ...} for /config
     budget: object = None  # DailyBudget or None (the durable $0 kill-switch)
+    question_log: object = None  # QuestionLog or None (durable analytics sink; needs Postgres)
+    notifier: object = None  # PushNotifier or None (real-time mobile push; needs NTFY_TOPIC)
     # Cached singletons so a per-upload / per-request graph rebuilds cheaply (no cross-encoder reload):
     embedder: object = None
     reranker: object = None
@@ -128,8 +130,31 @@ def build_app_state() -> AppState:
     elif daily_budget > 0:
         logger.warning("server: daily_token_budget set but no DATABASE_URL — cap DISABLED")
 
+    # Durable analytics sink: one row per answered question (metadata only). Shares the Postgres
+    # gate with the budget — no DATABASE_URL, no logging (local Chroma dev just skips it).
+    question_log = None
+    if dsn:
+        from agentic_rag.server.question_log import QuestionLog
+
+        question_log = QuestionLog(dsn)
+        logger.info("server: question logging ON (persisted in Postgres)")
+
+    # Real-time sink: push a mobile notification per question via ntfy. Independent of Postgres —
+    # gated only on NTFY_TOPIC, so it works even on a DB-less local run.
+    notifier = None
+    ntfy_topic = os.environ.get("NTFY_TOPIC")
+    if ntfy_topic:
+        from agentic_rag.server.notify import PushNotifier
+
+        notifier = PushNotifier(
+            ntfy_topic,
+            server=os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+            min_interval_s=float(os.environ.get("NTFY_MIN_INTERVAL_SECONDS", "60")))
+        logger.info("server: push notifications ON (ntfy)")
+
     return AppState(config=config, graph=graph, store=store,
                     max_rounds=max_rounds, model_names=model_names, budget=budget,
+                    question_log=question_log, notifier=notifier,
                     embedder=embedder, reranker=reranker,
                     controller_llm=controller_llm, generator_llm=generator_llm,
                     registry=registry, react_prompt=react_prompt, answer_prompt=answer_prompt,

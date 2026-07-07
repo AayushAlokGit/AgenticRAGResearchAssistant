@@ -27,7 +27,7 @@ from agentic_rag.rag.upload import (ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, displa
                                     is_upload)
 from agentic_rag.server.deps import build_app_state, build_scoped_graph, rebuild_default_graph
 from agentic_rag.server.request_context import (RequestContextFilter, RequestContextMiddleware,
-                                                current_client_ip)
+                                                current_client_ip, current_request_id)
 from agentic_rag.server.schemas import (AskRequest, ConfigResponse, ErrorEvent, HealthResponse,
                                         SourceInfo, SourcesResponse, UploadResponse)
 from agentic_rag.server.stream import stream_events
@@ -181,18 +181,23 @@ def delete_document(source: str):
     return {"deleted": source, "total_chunks": deps.store.count()}
 
 
-def _ask_stream(graph, question: str, max_rounds: int, budget):
-    """Yield SSE frames for one question, then charge the run's tokens to the daily budget.
+def _ask_stream(graph, question: str, max_rounds: int, budget, *,
+                question_log=None, scope: str = "both", req_id=None):
+    """Yield SSE frames for one question, then charge the run's tokens to the daily budget and
+    record the question to the durable analytics sink.
 
     A plain sync generator (sse-starlette offloads it to a threadpool). Any failure is surfaced as a
     typed error event rather than a broken stream; the daily-budget charge in `finally` is a no-op on a
-    cache hit (0 tokens).
+    cache hit (0 tokens). Both `finally` side effects are best-effort — they run AFTER the user has
+    their answer, so a sink failure can't break the response.
     """
     spent = 0
+    summary = None   # the DoneEvent's run stats, captured for the question log
     try:
         for event in stream_events(graph, question, max_rounds):
             if event.type == "done":
                 spent = event.total_tokens
+                summary = event
                 logger.info("/ask done | rounds=%d exit=%s tokens=%d latency_ms=%d",
                             event.rounds, event.exit_reason, event.total_tokens, event.latency_ms)
             yield _sse(event)
@@ -202,6 +207,17 @@ def _ask_stream(graph, question: str, max_rounds: int, budget):
     finally:
         if budget is not None:
             budget.add(spent)
+        if question_log is not None:
+            try:
+                question_log.record(
+                    question, scope=scope, req_id=req_id,
+                    rounds=summary.rounds if summary else None,
+                    exit_reason=summary.exit_reason if summary else None,
+                    total_tokens=summary.total_tokens if summary else None,
+                    latency_ms=summary.latency_ms if summary else None,
+                )
+            except Exception:
+                logger.exception("question log write failed (ignored)")
 
 
 @app.post("/ask")
@@ -211,6 +227,11 @@ def ask(req: AskRequest):
     logger.info("▶ /ask received | ip=%s scope=%s graph=%s knobs=%s | Q: %.200s",
                 current_client_ip(), req.scope, "scoped" if scoped else "default",
                 req.knobs.model_dump() if req.knobs else None, req.question)
+    # Real-time sink: buzz the phone at the moment of asking (throttled, fire-and-forget). Placed
+    # before the budget check on purpose — "someone asked" is true even on a resting demo, and the
+    # throttle stops a bot from machine-gunning notifications.
+    if deps.notifier is not None:
+        deps.notifier.notify_question(req.question, req_id=current_request_id())
     if deps.budget is not None and deps.budget.is_exhausted():
         logger.info("/ask refused — daily token budget exhausted (resting)")
         return EventSourceResponse(iter([_sse(ErrorEvent(message=_RESTING_MESSAGE))]))
@@ -232,4 +253,6 @@ def ask(req: AskRequest):
         )
         if knobs and knobs.max_rounds:
             max_rounds = knobs.max_rounds
-    return EventSourceResponse(_ask_stream(graph, req.question, max_rounds, deps.budget))
+    return EventSourceResponse(_ask_stream(graph, req.question, max_rounds, deps.budget,
+                                           question_log=deps.question_log, scope=req.scope,
+                                           req_id=current_request_id()))
