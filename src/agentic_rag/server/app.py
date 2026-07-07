@@ -141,14 +141,8 @@ def sources():
 
 
 @app.get("/questions", response_model=QuestionsResponse)
-def questions(limit: int = 50, token: str | None = None):
-    """Read back the question log (newest first). Guards visitors' input: DISABLED unless a
-    ``QUESTIONS_TOKEN`` env var is set, and then requires ``?token=`` to match it. Needs Postgres."""
-    expected = os.environ.get("QUESTIONS_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=404, detail="Not found.")   # feature off — don't advertise it
-    if token != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing token.")
+def questions(limit: int = 50):
+    """Read back the question log (newest first). Needs Postgres (DATABASE_URL)."""
     deps = app.state.deps
     if deps.question_log is None:
         raise HTTPException(status_code=503, detail="Question log not configured (no DATABASE_URL).")
