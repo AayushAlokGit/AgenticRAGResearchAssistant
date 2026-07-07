@@ -150,7 +150,7 @@ def build_app_state() -> AppState:
             ntfy_topic,
             server=os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
             min_interval_s=float(os.environ.get("NTFY_MIN_INTERVAL_SECONDS", "60")))
-        logger.info("server: push notifications ON (ntfy)")
+        logger.info("server: push notifications ON -> %s", notifier.url)  # exact topic, for debugging
 
     return AppState(config=config, graph=graph, store=store,
                     max_rounds=max_rounds, model_names=model_names, budget=budget,

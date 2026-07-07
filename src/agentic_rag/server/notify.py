@@ -38,11 +38,13 @@ class PushNotifier:
     def notify_question(self, question: str, req_id: Optional[str] = None) -> None:
         """Throttled, fire-and-forget push that someone asked a question. Returns immediately."""
         if not self._allow():
-            logger.info("push notification throttled (min_interval=%.0fs) — skipped", self.min_interval_s)
+            logger.info("push notification throttled (min_interval=%.0fs) — skipped for req %s",
+                        self.min_interval_s, req_id)
             return
         body = (question or "").strip()[:_MAX_BODY_CHARS] or "(empty question)"
         if req_id:
             body = f"{body}\n\nreq {req_id}"
+        logger.info("push notification dispatching -> %s (req %s)", self.url, req_id)
         # Daemon thread: the POST (network I/O, up to _TIMEOUT_S) never blocks the request path.
         threading.Thread(target=self._send, args=("New question - Agentic RAG", body),
                          daemon=True).start()
@@ -60,11 +62,26 @@ class PushNotifier:
     def _send(self, title: str, body: str) -> None:
         """Blocking ntfy POST — runs on the daemon thread. Best-effort: any failure is logged and
         swallowed so instrumentation can't break anything. Title stays ASCII (HTTP headers are
-        latin-1); the question rides in the UTF-8 body where any character is safe."""
+        latin-1); the question rides in the UTF-8 body where any character is safe.
+
+        Logs the outcome either way — the ntfy success response echoes the topic + a message id, so
+        the log line is proof of exactly WHICH topic the push landed on (the usual cause of a
+        'sent but not seen' is a case-mismatched subscription)."""
         try:
             request = urllib.request.Request(
                 self.url, data=body.encode("utf-8"), method="POST",
                 headers={"Title": title, "Tags": "speech_balloon"})
-            urllib.request.urlopen(request, timeout=_TIMEOUT_S).close()
-        except Exception:
-            logger.exception("push notification failed (ignored)")
+            with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as resp:
+                status = getattr(resp, "status", resp.getcode())
+                payload = resp.read(400).decode("utf-8", "replace")
+            logger.info("push notification OK: HTTP %s -> %s | ntfy: %s", status, self.url, payload)
+        except Exception as exc:
+            # Log the URL + a compact reason (an HTTPError carries the ntfy error body, worth seeing).
+            detail = ""
+            body_reader = getattr(exc, "read", None)
+            if callable(body_reader):
+                try:
+                    detail = body_reader().decode("utf-8", "replace")[:300]
+                except Exception:
+                    detail = ""
+            logger.exception("push notification FAILED -> %s | %s %s", self.url, exc, detail)
