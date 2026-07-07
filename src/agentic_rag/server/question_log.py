@@ -54,3 +54,26 @@ class QuestionLog:
                 " (req_id, scope, question, rounds, exit_reason, total_tokens, latency_ms)"
                 " values (%s, %s, %s, %s, %s, %s, %s)",
                 (req_id, scope, question, rounds, exit_reason, total_tokens, latency_ms))
+
+    def recent(self, limit: int = 50) -> list:
+        """Return the most recent questions, newest first, as plain dicts (for the /questions read
+        endpoint). ``asked_at`` is serialized to ISO-8601 so it survives JSON."""
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select asked_at, req_id, scope, question, rounds, exit_reason,"
+                    " total_tokens, latency_ms from questions order by asked_at desc limit %s",
+                    (limit,))
+                rows = cur.fetchall()
+        return [
+            {"asked_at": r[0].isoformat(), "req_id": r[1], "scope": r[2], "question": r[3],
+             "rounds": r[4], "exit_reason": r[5], "total_tokens": r[6], "latency_ms": r[7]}
+            for r in rows
+        ]
+
+    def count(self) -> int:
+        """Total questions recorded (all time)."""
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select count(*) from questions")
+                return int(cur.fetchone()[0])

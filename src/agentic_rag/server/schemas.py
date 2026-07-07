@@ -136,3 +136,20 @@ class HealthResponse(BaseModel):
     status: str
     chunks: int
     daily_tokens_used: int = 0
+
+
+class QuestionRecord(BaseModel):
+    """One logged question (metadata only — no answer body, no client IP)."""
+    asked_at: str
+    req_id: Optional[str] = None
+    scope: Optional[str] = None
+    question: str
+    rounds: Optional[int] = None
+    exit_reason: Optional[str] = None
+    total_tokens: Optional[int] = None
+    latency_ms: Optional[int] = None
+
+
+class QuestionsResponse(BaseModel):
+    total: int                                  # all-time count
+    questions: List[QuestionRecord]             # the most recent slice, newest first
